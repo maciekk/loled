@@ -1,7 +1,7 @@
 // List of List (LOL) EDitor
 //
 // TODO
-// - bug: 'u'p on root loses idCurrentItem
+// - in save file the nodes should be sorted by their ID
 // - add 'r'eplace command, which replaces label on existing node
 // - add 'P'rint command, which prints the whole recursive tree.
 // - start using ncurses, so can do side-by-sides, etc.
@@ -9,6 +9,7 @@
 // - better rendering of the items (e.g., list title, current item, prompt)
 // - start using the list for actual TODOs
 // - list of recent *.lol files edited should itself be a list under root
+// - provide convenience routine to get at sublist based on node ID
 
 package main
 
@@ -310,6 +311,8 @@ func (ds *dataStore) load() {
 			ds.nodes[k].parent = n.id
 		}
 	}
+	// Also adjust root's parent.
+	ds.nodes[0].parent = -1
 
 	ds.idCurrentList = 0
 	ds.idCurrentItem = -1
