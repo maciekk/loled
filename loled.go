@@ -1,0 +1,469 @@
+// List of List (LOL) EDitor
+//
+// TODO
+// - bug: 'u'p on root loses idCurrentItem
+// - add 'r'eplace command, which replaces label on existing node
+// - add 'P'rint command, which prints the whole recursive tree.
+// - start using ncurses, so can do side-by-sides, etc.
+// - explore going back to 'sublist' being []*node, rather than []int of IDs
+// - better rendering of the items (e.g., list title, current item, prompt)
+// - start using the list for actual TODOs
+// - support reading / writing arbitrary files, so can keep list sets separate
+
+package main
+
+import (
+	"bufio"
+	"fmt"
+	// If ever want to use ncurses, module below.
+	//"github.com/rthornton128/goncurses"
+	"io/ioutil"
+	"os"
+	"os/exec"
+	"strconv"
+	"strings"
+)
+
+var cmdPrompt = ">> "
+var whitespace = " 	\n\r"
+
+// TODO: this should be a commandline arg, to easily and naturally support
+// multiple files.
+var savepath = "/var/tmp/mylist.txt"
+var pfxActive = "*** " // used only on screen
+var pfxItem = "- "     // used in both, disk & screen
+var pfxFocusedItem = "> "
+
+func Warning(s string) {
+	fmt.Println("WARNING: " + s)
+}
+
+// The underlying model for all data in this program, these list of lists of
+// lists of ..., is essentially a tree. Here, a node is an element in that
+// tree.
+type node struct {
+	// node identifier #
+	id int
+	// node content payload
+	label string
+	// ID of parent node
+	parent int
+	// list of children IDs
+	sublist []int
+}
+
+type dataStore struct {
+	// Repository of all the nodes, keyed by node ID.
+	nodes map[int]*node
+
+	// Next free node ID.
+	freeID int
+
+	// Current list and currently selected item in it.
+	//
+	// NOTE: it is possible the list is empty, and thus does not have a
+	// selected item. In that case idCurrentItem is negative to indicate
+	// this.
+	idCurrentList int
+	idCurrentItem int
+
+	// Indicates if data has been modified, and needs to be saved.
+	dirty bool
+}
+
+func (ds *dataStore) init() {
+	// TODO: init() has uneasy relationship currently with any subsequent
+	// load(), which we *should* do next. In particular, forcibly adding
+	// "root" node now, and/or dirty marker are questionable.
+	ds.dirty = false
+
+	root := node{
+		0, // ID
+		"root",
+		-1, // invalid parent id (i.e., no parent)
+		make([]int, 0),
+	}
+	ds.nodes = make(map[int]*node, 1)
+	ds.nodes[0] = &root
+
+	ds.freeID = 1
+
+	ds.idCurrentList = 0  // root
+	ds.idCurrentItem = -1 // invalid == no current item
+}
+
+func (ds *dataStore) sprintCurrentList() []string {
+	var res []string
+	n := ds.nodes[ds.idCurrentList]
+
+	res = append(res, n.label)
+	res = append(res, "========")
+	for _, item := range n.sublist {
+		pfx := pfxItem
+		if item == ds.idCurrentItem {
+			pfx = pfxFocusedItem
+		}
+		sfx := ""
+		if len(ds.nodes[item].sublist) > 0 {
+			sfx = " ..."
+		}
+		res = append(res, pfx+ds.nodes[item].label+sfx)
+	}
+	return res
+}
+
+func (ds *dataStore) printCurrentList() {
+	for _, s := range ds.sprintCurrentList() {
+		fmt.Println(s)
+	}
+}
+
+func (ds *dataStore) appendItem(s string) {
+	n := node{
+		ds.freeID,        // ID
+		s,                // payload
+		ds.idCurrentList, // parent
+		make([]int, 0),   // sublist
+	}
+	ds.nodes[ds.freeID] = &n
+	ds.freeID += 1
+	kids := &ds.nodes[ds.idCurrentList].sublist
+	*kids = append(*kids, n.id)
+
+	// Make the latest node the current one.
+	ds.idCurrentItem = n.id
+
+	ds.dirty = true
+}
+
+func (ds *dataStore) deleteItem() {
+	if ds.idCurrentItem >= 0 {
+		kids := &ds.nodes[ds.idCurrentList].sublist
+		for i, id := range *kids {
+			if id == ds.idCurrentItem {
+				// First, update the current item.
+				if len(*kids) == 1 {
+					ds.idCurrentItem = -1 // we are removing last item on list
+				} else if i > 0 {
+					ds.idCurrentItem = (*kids)[i-1] // select previous item
+				} else {
+					// deleting first item on list, but there are
+					// others
+					ds.idCurrentItem = (*kids)[1]
+				}
+
+				// Next, remove trace of the node.
+				*kids = append((*kids)[:i], (*kids)[i+1:]...)
+				delete(ds.nodes, id)
+
+				return
+			}
+		}
+	}
+}
+
+func (ds *dataStore) nextItem() {
+	list := ds.nodes[ds.idCurrentList].sublist
+	for i, id := range list {
+		if id == ds.idCurrentItem {
+			if i < len(list)-1 {
+				ds.idCurrentItem = list[i+1]
+			}
+			return
+		}
+	}
+}
+
+func (ds *dataStore) prevItem() {
+	list := ds.nodes[ds.idCurrentList].sublist
+	for i, id := range list {
+		if id == ds.idCurrentItem {
+			if i > 0 {
+				ds.idCurrentItem = list[i-1]
+			}
+			return
+		}
+	}
+}
+
+func (ds *dataStore) focusDescend() {
+	if ds.idCurrentItem >= 0 {
+		ds.idCurrentList = ds.idCurrentItem
+		if len(ds.nodes[ds.idCurrentList].sublist) > 0 {
+			ds.idCurrentItem = ds.nodes[ds.idCurrentList].sublist[0]
+		} else {
+			// < 0 means no item selected
+			ds.idCurrentItem = -1
+		}
+	}
+	// Else do nothing; < 0 implies ds.idCurrentList does not have items.
+}
+
+func (ds *dataStore) focusAscend() {
+	if ds.nodes[ds.idCurrentList].parent < 0 {
+		// Nothing to do if already at a root.
+		return
+	}
+	ds.idCurrentList, ds.idCurrentItem = ds.nodes[ds.idCurrentList].parent, ds.idCurrentList
+}
+
+func (ds *dataStore) save() {
+	f, err := os.Create(savepath)
+	defer f.Close()
+
+	if err != nil {
+		fmt.Printf("Error saving to %q: %q\n", savepath, err)
+		return
+	}
+
+	for i, n := range ds.nodes {
+		f.WriteString(fmt.Sprintf("node %v\n", i))
+		f.WriteString(fmt.Sprintf("%s\n", n.label))
+		// TODO: get rid of trailing space after last item; use some
+		// join()
+		for _, child := range n.sublist {
+			f.WriteString(fmt.Sprintf("%v ", child))
+		}
+		// NOTE: if no children, will result in blank line.
+		// (intentional)
+		f.WriteString("\n")
+	}
+
+	ds.dirty = false
+	fmt.Printf("Saved to %q.\n", savepath)
+}
+
+func (ds *dataStore) load() {
+	// First wipe any data we have.
+	ds.nodes = make(map[int]*node, 0)
+	ds.freeID = 1
+
+	data, err := ioutil.ReadFile(savepath)
+	if err != nil {
+		fmt.Printf("Error reading %q: %q\n", savepath, err)
+		return
+	}
+
+	lines := strings.Split(string(data), "\n")
+
+	var l string
+	for {
+		if len(lines) < 1 {
+			break
+		}
+
+		l = pop(&lines)
+
+		// Skip any blank lines.
+		if strings.Trim(l, whitespace) == "" {
+			continue
+		}
+
+		if !strings.HasPrefix(l, "node ") {
+			fmt.Printf("Format error: expected node #, got %q.\n", l)
+			return
+		}
+
+		l = l[5:] // Strip "node ".
+		id, err := strconv.Atoi(l)
+
+		if err != nil {
+			panic(err)
+		}
+
+		if ds.freeID <= id {
+			ds.freeID += 1
+		}
+
+		label := pop(&lines)
+
+		l = strings.Trim(pop(&lines), whitespace)
+		var idKids []int
+		if len(l) > 0 {
+			// have some kids
+			kids := strings.Split(l, " ")
+			idKids = make([]int, len(kids))
+			for i, s := range kids {
+				idKids[i], err = strconv.Atoi(s)
+				if err != nil {
+					panic(err)
+				}
+			}
+		} else {
+			// no kids
+			idKids = make([]int, 0)
+		}
+
+		// Create the node.
+		n := node{
+			id,
+			label,
+			0, // parent; TBD
+			idKids,
+		}
+		ds.nodes[id] = &n
+	}
+
+	// Readjust parent pointers.
+	for _, n := range ds.nodes {
+		for _, k := range n.sublist {
+			ds.nodes[k].parent = n.id
+		}
+	}
+
+	ds.idCurrentList = 0
+	ds.idCurrentItem = -1
+	if len(ds.nodes[ds.idCurrentList].sublist) > 0 {
+		ds.idCurrentItem = ds.nodes[ds.idCurrentList].sublist[0]
+	}
+
+	ds.dirty = false
+	fmt.Printf("Loaded %q.\n", savepath)
+}
+
+func readString() string {
+	reader := bufio.NewReader(os.Stdin)
+	text, _ := reader.ReadString('\n')
+	if text[len(text)-1] == '\n' {
+		text = text[:len(text)-1]
+	}
+	return text
+}
+
+func clearScreen() {
+	cmd := exec.Command("/usr/bin/clear") // TODO: make OS-agnostic
+	cmd.Stdout = os.Stdout
+	cmd.Run()
+}
+
+func cmdPrint(ds *dataStore) {
+	clearScreen()
+	ds.printCurrentList()
+}
+
+func cmdAddItems(ds *dataStore) {
+	for {
+		fmt.Print("Enter item: ")
+		text := strings.TrimRight(readString(), whitespace)
+		if text == "" {
+			break
+		}
+		ds.appendItem(text)
+	}
+}
+
+func cmdDeleteItem(ds *dataStore) {
+	ds.deleteItem()
+}
+
+func cmdNextItem(ds *dataStore) {
+	ds.nextItem()
+	cmdPrint(ds)
+}
+
+func cmdPrevItem(ds *dataStore) {
+	ds.prevItem()
+	cmdPrint(ds)
+}
+
+func cmdDescend(ds *dataStore) {
+	ds.focusDescend()
+	cmdPrint(ds)
+}
+
+func cmdAscend(ds *dataStore) {
+	ds.focusAscend()
+	cmdPrint(ds)
+}
+
+func cmdQuit(ds *dataStore) {
+	fmt.Printf("Quitting... ")
+	if ds.dirty {
+		fmt.Printf("save first? [y/n] ")
+		x := readString()
+		if strings.HasPrefix(x, "y") {
+			ds.save()
+		}
+	}
+	fmt.Println()
+	os.Exit(0)
+}
+
+func cmdSaveData(ds *dataStore) {
+	ds.save()
+}
+
+func cmdLoadData(ds *dataStore) {
+	ds.load()
+}
+
+func readKey() byte {
+	// Source: https://stackoverflow.com/questions/15159118/read-a-character-from-standard-input-in-go-without-pressing-enter
+
+	// NOTE: original had "-F", but on OSX it seems to be "-f".
+
+	// disable input buffering
+	exec.Command("/bin/stty", "-f", "/dev/tty", "cbreak", "min", "1").Run()
+	// do not display entered characters on the screen
+	exec.Command("/bin/stty", "-f", "/dev/tty", "-echo").Run()
+
+	defer exec.Command("/bin/stty", "-f", "/dev/tty", "echo").Run()
+
+	var b []byte = make([]byte, 1)
+	os.Stdin.Read(b)
+
+	return b[0]
+}
+
+func pop(l *[]string) string {
+	v := (*l)[0]
+	*l = (*l)[1:]
+	return v
+}
+
+func pushBack(l *[]string, s string) {
+	*l = append(*l, s)
+}
+
+func main() {
+	var ds dataStore
+	ds.init()
+
+	// interaction loop
+	for {
+		fmt.Printf(cmdPrompt)
+		//switch readString()[0] {
+		//switch stdscr.GetChar() {
+		key := readKey()
+		// Echo the key, as echo is turned off.
+		// FWIW, longer term we may print something more.
+		fmt.Printf("%c\n", key)
+
+		switch key {
+		case 'q':
+			cmdQuit(&ds)
+		case 'p':
+			cmdPrint(&ds)
+		case 'a':
+			cmdAddItems(&ds)
+		case 'd':
+			cmdDeleteItem(&ds)
+		case 'j':
+			cmdNextItem(&ds)
+		case 'k':
+			cmdPrevItem(&ds)
+		case '\n',
+			'>':
+			cmdDescend(&ds)
+		case 'u',
+			'<':
+			cmdAscend(&ds)
+		case 'S':
+			cmdSaveData(&ds)
+		case 'L':
+			cmdLoadData(&ds)
+		default:
+			fmt.Println("  unknown command")
+		}
+	}
+}
