@@ -33,12 +33,11 @@ import (
 
 var savepath = flag.String("f", "./lol.txt", "Filename to use for saving and loading")
 
-var cmdPrompt = ">> "
+var cmdPrompt = "$ "
 var whitespace = " 	\n\r"
 
-var pfxActive = "*** " // used only on screen
-var pfxItem = "- "     // used in both, disk & screen
-var pfxFocusedItem = "> "
+var pfxItem = "- " // used in both, disk & screen
+var pfxFocusedItem = ">> "
 
 func Warning(s string) {
 	fmt.Println("WARNING: " + s)
@@ -102,8 +101,9 @@ func (ds *dataStore) sprintCurrentList() []string {
 	var res []string
 	n := ds.nodes[ds.idCurrentList]
 
-	res = append(res, n.label)
-	res = append(res, "========")
+	title := fmt.Sprintf("[[ %v ]]", n.label)
+	res = append(res, title)
+	res = append(res, strings.Repeat("=", len(title)))
 	for _, item := range n.sublist {
 		pfx := pfxItem
 		if item == ds.idCurrentItem {
