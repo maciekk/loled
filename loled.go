@@ -1,7 +1,6 @@
 // List of List (LOL) EDitor
 //
 // TODO
-// - in save file the nodes should be sorted by their ID
 // - add 'r'eplace command, which replaces label on existing node
 // - add 'P'rint command, which prints the whole recursive tree.
 // - start using ncurses, so can do side-by-sides, etc.
@@ -10,6 +9,11 @@
 // - start using the list for actual TODOs
 // - list of recent *.lol files edited should itself be a list under root
 // - provide convenience routine to get at sublist based on node ID
+// - every save, renumber node IDs to compact them, to remove holes.
+// - do "safe" saves, in that first write to temp file, and only if success,
+//   rename and replace old version
+// - do backups on save, say to foo~
+// - add command to move current item up or down the list
 
 package main
 
@@ -22,6 +26,7 @@ import (
 	"io/ioutil"
 	"os"
 	"os/exec"
+	"sort"
 	"strconv"
 	"strings"
 )
@@ -217,8 +222,14 @@ func (ds *dataStore) save() {
 		return
 	}
 
-	for i, n := range ds.nodes {
-		f.WriteString(fmt.Sprintf("node %v\n", i))
+	keys := make([]int, 0)
+	for _, n := range ds.nodes {
+		keys = append(keys, n.id)
+	}
+	sort.Ints(keys)
+	for _, k := range keys {
+		n := ds.nodes[k]
+		f.WriteString(fmt.Sprintf("node %v\n", k))
 		f.WriteString(fmt.Sprintf("%s\n", n.label))
 		// TODO: get rid of trailing space after last item; use some
 		// join()
@@ -357,6 +368,7 @@ func cmdAddItems(ds *dataStore) {
 
 func cmdDeleteItem(ds *dataStore) {
 	ds.deleteItem()
+	cmdPrint(ds)
 }
 
 func cmdNextItem(ds *dataStore) {
