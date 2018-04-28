@@ -1,7 +1,6 @@
 // List of List (LOL) EDitor
 //
 // TODO
-// - auto-load on startup
 // - add "item move" commands: up, down, top, bottom
 // - add 'P'rint command, which prints the whole recursive tree.
 // - start using ncurses, so can do side-by-sides, etc.
@@ -30,7 +29,7 @@ import (
 	"strings"
 )
 
-var savepath = flag.String("f", "./lol.txt", "Filename to use for saving and loading")
+var filename = flag.String("f", "./lol.txt", "Filename to use for saving and loading")
 
 var cmdPrompt = "$ "
 var whitespace = " 	\n\r"
@@ -243,11 +242,11 @@ func (ds *dataStore) focusAscend() {
 }
 
 func (ds *dataStore) save() {
-	f, err := os.Create(*savepath)
+	f, err := os.Create(*filename)
 	defer f.Close()
 
 	if err != nil {
-		fmt.Printf("Error saving to %q: %q\n", savepath, err)
+		fmt.Printf("Error saving to %q: %q\n", filename, err)
 		return
 	}
 
@@ -271,7 +270,7 @@ func (ds *dataStore) save() {
 	}
 
 	ds.dirty = false
-	fmt.Printf("Saved to %q.\n", *savepath)
+	fmt.Printf("Saved to %q.\n", *filename)
 }
 
 func (ds *dataStore) load() {
@@ -279,9 +278,9 @@ func (ds *dataStore) load() {
 	ds.nodes = make(map[int]*node, 0)
 	ds.freeID = 1
 
-	data, err := ioutil.ReadFile(*savepath)
+	data, err := ioutil.ReadFile(*filename)
 	if err != nil {
-		fmt.Printf("Error reading %q: %q\n", savepath, err)
+		fmt.Printf("Error reading %q: %q\n", filename, err)
 		return
 	}
 
@@ -361,7 +360,7 @@ func (ds *dataStore) load() {
 	}
 
 	ds.dirty = false
-	fmt.Printf("Loaded %q.\n", *savepath)
+	fmt.Printf("Loaded %q.\n", *filename)
 }
 
 func readString() string {
@@ -479,7 +478,14 @@ func main() {
 	flag.Parse()
 
 	var ds dataStore
-	ds.init()
+
+	if _, err := os.Stat(*filename); err == nil {
+		ds.load()
+	} else {
+		fmt.Printf("Unable to stat %q; creating empty dataStore instead.\n", *filename)
+		ds.init()
+	}
+	ds.printCurrentList()
 
 	// interaction loop
 	for {
