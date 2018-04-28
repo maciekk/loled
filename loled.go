@@ -1,6 +1,8 @@
 // List of List (LOL) EDitor
 //
 // TODO
+// - add item right after currentItem, rather than always at end
+// - when deleting item, need special handling if its sublist is not empty!
 // - need ability to tag multiple items in current list
 // - ... then command to push tagged items as sublists under new item within
 //   current list
@@ -15,9 +17,14 @@
 // - explore going back to 'sublist' being []*node, rather than []int of IDs
 // - list of recent *.lol files edited should itself be a list under root
 // - every save, renumber node IDs to compact them, to remove holes.
+// - ASCII-ify "so excited" happy face, use as initial logo?
+//   http://1.bp.blogspot.com/_xmWIUzqxRic/TMmpH4J0iKI/AAAAAAAAABY/CLvy4P5AowA/s200/happy-face-770659.png
+// - alas, would require width ~50 for good recognition, which might be too large
 //
 // NOTES
 // - See https://appliedgo.net/tui/ for review of potential TUIs to use.
+// - gocui example of input modes: jroimartin/vimeditor.go
+//     https://gist.github.com/jroimartin/1ac98d3da7278fa18866c9cae0af6007
 
 package main
 
@@ -139,6 +146,92 @@ type viewData struct {
 
 	// echo area
 	paneEcho *gocui.View
+}
+
+type LolEditor struct {
+	modeMove bool
+	// TODO: probably all of viewData should be moved here
+	// TODO: also, probably current list + current item + tagged should
+	// move here too.
+}
+
+func (le *LolEditor) Edit(v *gocui.View, key gocui.Key, ch rune, mod gocui.Modifier) {
+	if le.modeMove {
+		le.MoveMode(v, key, ch, mod)
+	} else {
+		le.NormalMode(v, key, ch, mod)
+	}
+}
+
+func (le *LolEditor) MoveMode(v *gocui.View, key gocui.Key, ch rune, mod gocui.Modifier) {
+	idx := ds.currentItemIndex()
+	max_idx := len(ds.currentList().sublist) - 1
+
+	switch {
+	case ch == 'q' || key == gocui.KeyEnter:
+		fmt.Fprintln(vd.paneEcho, "Switched to MOVE mode.")
+		le.modeMove = false
+	case ch == 'k':
+		if idx > 0 {
+			ds.moveItemToIndex(idx - 1)
+		}
+	case ch == 'K' || ch == '0':
+		if idx > 0 {
+			ds.moveItemToIndex(0)
+		}
+	case ch == 'j':
+		if idx < max_idx {
+			ds.moveItemToIndex(idx + 1)
+		}
+	case ch == 'J' || ch == 'e' || ch == '-':
+		if idx < max_idx {
+			ds.moveItemToIndex(max_idx)
+		}
+	}
+	updateMainPane()
+}
+
+func (le *LolEditor) NormalMode(v *gocui.View, key gocui.Key, ch rune, mod gocui.Modifier) {
+	switch {
+	case ch == 'm':
+		fmt.Fprintln(vd.paneEcho, "Switched to NORMAL mode.")
+		le.modeMove = true
+		// TODO: use actually some of these MoveCursor commands on top of
+		// current manipulation of currentItem.
+		/*
+			case ch == 'j':
+				v.MoveCursor(0, 1, false)
+			case ch == 'k':
+				v.MoveCursor(0, -1, false)
+			case ch == 'h':
+				v.MoveCursor(-1, 0, false)
+			case ch == 'l':
+				v.MoveCursor(1, 0, false)
+			}
+		*/
+	case ch == 'j':
+		cmdNextItem()
+	case ch == 'k':
+		cmdPrevItem()
+	case ch == 'a':
+		cmdAddItems()
+	case ch == 'D':
+		cmdDeleteItem()
+	case ch == 'r':
+		cmdReplaceItem()
+	case ch == '<' || ch == 'u':
+		cmdAscend()
+	case ch == '>' || key == gocui.KeyEnter:
+		cmdDescend()
+	case ch == 'S':
+		cmdSaveData()
+	case ch == 'L':
+		cmdLoadData()
+		/*
+			case ch == 'q':
+				quit()
+		*/
+	}
 }
 
 ////////////////////////////////////////
@@ -455,14 +548,16 @@ func (ds *dataStore) load() {
 
 func layout(g *gocui.Gui) error {
 	maxX, maxY := g.Size()
-	if v, err := g.SetView("main", 0, 0, min(80, maxX-2), maxY-2-1); err != nil {
+	if v, err := g.SetView("main", 0, 0, min(80, maxX-2), maxY-3-1); err != nil {
 		if err != gocui.ErrUnknownView {
 			return err
 		}
+		v.Editor = &LolEditor{}
+		v.Editable = true
 		vd.paneMain = v
 		updateMainPane()
 	}
-	if v, err := g.SetView("echo", -1, maxY-2, maxX+1, maxY+1); err != nil {
+	if v, err := g.SetView("echo", -1, maxY-3, maxX+1, maxY+1); err != nil {
 		if err != gocui.ErrUnknownView {
 			return err
 		}
@@ -539,7 +634,7 @@ func min(a, b int) int {
 ////////////////////////////////////////
 // COMMANDS
 
-func cmdAddItems(g *gocui.Gui, v *gocui.View) error {
+func cmdAddItems() error {
 	for {
 		fmt.Print("Enter item: ")
 		text := strings.TrimRight(readString(), whitespace)
@@ -552,79 +647,49 @@ func cmdAddItems(g *gocui.Gui, v *gocui.View) error {
 	return nil
 }
 
-func cmdDeleteItem(g *gocui.Gui, v *gocui.View) error {
+func cmdDeleteItem() error {
 	ds.deleteItem()
 	updateMainPane()
 	return nil
 }
 
-func cmdMoveItem(g *gocui.Gui, v *gocui.View) error {
-	idx := ds.currentItemIndex()
-	max_idx := len(ds.currentList().sublist) - 1
-
-	// Select WHERE TO move item.
-	key := readKey()
-	switch key {
-	case 'k':
-		if idx > 0 {
-			ds.moveItemToIndex(idx - 1)
-		}
-	case 'K',
-		'0':
-		if idx > 0 {
-			ds.moveItemToIndex(0)
-		}
-	case 'j':
-		if idx < max_idx {
-			ds.moveItemToIndex(idx + 1)
-		}
-	case 'J',
-		'-':
-		if idx < max_idx {
-			ds.moveItemToIndex(max_idx)
-		}
-	}
-	updateMainPane()
-	return nil
-}
-
-func cmdNextItem(g *gocui.Gui, v *gocui.View) error {
+func cmdNextItem() error {
 	ds.nextItem()
 	updateMainPane()
 	return nil
 }
 
-func cmdPrevItem(g *gocui.Gui, v *gocui.View) error {
+func cmdPrevItem() error {
 	ds.prevItem()
 	updateMainPane()
 	return nil
 }
 
-func cmdDescend(g *gocui.Gui, v *gocui.View) error {
+func cmdDescend() error {
 	ds.focusDescend()
 	updateMainPane()
 	return nil
 }
 
-func cmdAscend(g *gocui.Gui, v *gocui.View) error {
+func cmdAscend() error {
 	ds.focusAscend()
 	updateMainPane()
 	return nil
 }
 
-func cmdReplaceItem(g *gocui.Gui, v *gocui.View) error {
+func cmdReplaceItem() error {
 	fmt.Printf("Replace with: ")
 	ds.replaceItem(readString())
 	updateMainPane()
 	return nil
 }
 
-func cmdSaveData(g *gocui.Gui, v *gocui.View) error {
+func cmdSaveData() error {
 	ds.save()
 	return nil
 }
 
-func cmdLoadData(g *gocui.Gui, v *gocui.View) error {
+func cmdLoadData() error {
 	ds.load()
 	return nil
 }
@@ -650,48 +715,9 @@ func keybindings(g *gocui.Gui, ds *dataStore) error {
 	if err := g.SetKeybinding("", gocui.KeyCtrlC, gocui.ModNone, quit); err != nil {
 		log.Panicln(err)
 	}
-
-	if err := g.SetKeybinding("main", 'q', gocui.ModNone, quit); err != nil {
-		return err
+	if err := g.SetKeybinding("", gocui.KeyCtrlQ, gocui.ModNone, quit); err != nil {
+		log.Panicln(err)
 	}
-	if err := g.SetKeybinding("main", 'j', gocui.ModNone, cmdNextItem); err != nil {
-		return err
-	}
-	if err := g.SetKeybinding("main", 'k', gocui.ModNone, cmdPrevItem); err != nil {
-		return err
-	}
-	if err := g.SetKeybinding("main", 'a', gocui.ModNone, cmdAddItems); err != nil {
-		return err
-	}
-	if err := g.SetKeybinding("main", 'D', gocui.ModNone, cmdDeleteItem); err != nil {
-		return err
-	}
-	if err := g.SetKeybinding("main", 'r', gocui.ModNone, cmdReplaceItem); err != nil {
-		return err
-	}
-	if err := g.SetKeybinding("main", '<', gocui.ModNone, cmdAscend); err != nil {
-		return err
-	}
-	if err := g.SetKeybinding("main", 'u', gocui.ModNone, cmdAscend); err != nil {
-		return err
-	}
-	if err := g.SetKeybinding("main", '>', gocui.ModNone, cmdDescend); err != nil {
-		return err
-	}
-	if err := g.SetKeybinding("main", gocui.KeyEnter, gocui.ModNone, cmdDescend); err != nil {
-		return err
-	}
-	if err := g.SetKeybinding("main", 'S', gocui.ModNone, cmdSaveData); err != nil {
-		return err
-	}
-	if err := g.SetKeybinding("main", 'L', gocui.ModNone, cmdLoadData); err != nil {
-		return err
-	}
-
-	/*
-		case 'm':
-			cmdMoveItem(&ds)
-	*/
 
 	if err := g.SetKeybinding("", gocui.KeyCtrlL, gocui.ModNone,
 		func(g *gocui.Gui, v *gocui.View) error {
