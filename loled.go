@@ -25,13 +25,16 @@ import (
 	"bufio"
 	"flag"
 	"fmt"
-	termbox "github.com/nsf/termbox-go"
 	"io/ioutil"
+	"log"
 	"os"
 	"os/exec"
 	"sort"
 	"strconv"
 	"strings"
+
+	"github.com/jroimartin/gocui"
+	"github.com/nsf/termbox-go"
 )
 
 var filename = flag.String("f", "./lol.txt",
@@ -49,6 +52,52 @@ func Warning(s string) {
 	fmt.Println("WARNING: " + s)
 }
 
+const (
+	FG_BLACK = 30 + iota
+	FG_RED
+	FG_GREEN
+	FG_YELLOW
+	FG_BLUE
+	FG_MAGENTA
+	FG_CYAN
+	FG_WHITE
+)
+
+const (
+	BG_BLACK = 40 + iota
+	BG_RED
+	BG_GREEN
+	BG_YELLOW
+	BG_BLUE
+	BG_MAGENTA
+	BG_CYAN
+	BG_WHITE
+)
+
+// NOTE: these don't seem to work os OS X terminal
+const (
+	FG_BRIGHT_BLACK = 90 + iota
+	FG_BRIGHT_RED
+	FG_BRIGHT_GREEN
+	FG_BRIGHT_YELLOW
+	FG_BRIGHT_BLUE
+	FG_BRIGHT_MAGENTA
+	FG_BRIGHT_CYAN
+	FG_BRIGHT_WHITE
+)
+
+// NOTE: these don't seem to work os OS X terminal
+const (
+	BG_BRIGHT_BLACK = 100 + iota
+	BG_BRIGHT_RED
+	BG_BRIGHT_GREEN
+	BG_BRIGHT_YELLOW
+	BG_BRIGHT_BLUE
+	BG_BRIGHT_MAGENTA
+	BG_BRIGHT_CYAN
+	BG_BRIGHT_WHITE
+)
+
 // The underlying model for all data in this program, these list of lists of
 // lists of ..., is essentially a tree. Here, a node is an element in that
 // tree.
@@ -63,6 +112,7 @@ type node struct {
 	sublist []int
 }
 
+// The "Model" component of MVC framework.
 type dataStore struct {
 	// Repository of all the nodes, keyed by node ID.
 	nodes map[int]*node
@@ -82,6 +132,22 @@ type dataStore struct {
 	dirty bool
 }
 
+// The "View" component of MVC framework.
+type viewData struct {
+	// current list display
+	paneMain *gocui.View
+
+	// echo area
+	paneEcho *gocui.View
+}
+
+////////////////////////////////////////
+// Singletons
+var ds dataStore
+var vd viewData
+
+////////////////////////////////////////
+// methods
 func (ds *dataStore) init() {
 	// TODO: init() has uneasy relationship currently with any subsequent
 	// load(), which we *should* do next. In particular, forcibly adding
@@ -172,29 +238,19 @@ func (ds *dataStore) replaceItem(s string) {
 }
 
 func (ds *dataStore) deleteItem() {
-	if ds.idCurrentItem >= 0 {
-		kids := &ds.currentList().sublist
-		for i, id := range *kids {
-			if id == ds.idCurrentItem {
-				// First, update the current item.
-				if len(*kids) == 1 {
-					ds.idCurrentItem = -1 // we are removing last item on list
-				} else if i > 0 {
-					ds.idCurrentItem = (*kids)[i-1] // select previous item
-				} else {
-					// deleting first item on list, but there are
-					// others
-					ds.idCurrentItem = (*kids)[1]
-				}
-
-				// Next, remove trace of the node.
-				*kids = append((*kids)[:i], (*kids)[i+1:]...)
-				delete(ds.nodes, id)
-
-				return
-			}
-		}
+	if ds.idCurrentItem < 0 {
+		// no items
+		return
 	}
+
+	kids := &ds.currentList().sublist
+	i := ds.currentItemIndex()
+	*kids = append((*kids)[:i], (*kids)[i+1:]...)
+	delete(ds.nodes, ds.idCurrentItem)
+
+	// Make sure index is still valid
+	i = min(i, len(*kids)-1)
+	ds.idCurrentItem = (*kids)[i]
 }
 
 func (ds *dataStore) moveItemToIndex(idxNew int) {
@@ -301,7 +357,7 @@ func (ds *dataStore) save() {
 	}
 
 	ds.dirty = false
-	fmt.Printf("Saved to %q.\n", *filename)
+	fmt.Fprintf(vd.paneEcho, "Saved to %q.\n", *filename)
 }
 
 func (ds *dataStore) load() {
@@ -397,39 +453,38 @@ func (ds *dataStore) load() {
 ////////////////////////////////////////
 // User Interface functions
 
-// Stolen from Termbox's boxed demo app.
-func tbprint(x, y int, fg, bg termbox.Attribute, msg string) {
-	for _, c := range msg {
-		termbox.SetCell(x, y, c, fg, bg)
-		x += 1 // TODO: at some point consider rune width
-	}
-}
-
-// Stolen from Termbox's boxed demo app.
-func fill(x, y, w, h int, cell termbox.Cell) {
-	for ly := 0; ly < h; ly++ {
-		for lx := 0; lx < w; lx++ {
-			termbox.SetCell(x+lx, y+ly, cell.Ch, cell.Fg, cell.Bg)
+func layout(g *gocui.Gui) error {
+	maxX, maxY := g.Size()
+	if v, err := g.SetView("main", 0, 0, min(80, maxX-2), maxY-2-1); err != nil {
+		if err != gocui.ErrUnknownView {
+			return err
 		}
+		vd.paneMain = v
+		updateMainPane()
 	}
+	if v, err := g.SetView("echo", -1, maxY-2, maxX+1, maxY+1); err != nil {
+		if err != gocui.ErrUnknownView {
+			return err
+		}
+		v.Frame = true
+		v.Autoscroll = true
+		v.FgColor = gocui.ColorWhite
+		vd.paneEcho = v
+
+		fmt.Fprintln(v, "Welcome.")
+	}
+	g.SetCurrentView("main")
+	return nil
 }
 
-func redrawAll(ds *dataStore) {
-	const coldef = termbox.ColorDefault
-	termbox.Clear(coldef, coldef)
-	//w, h := termbox.Size()
-
-	// current line being printed
-	lidx := 0
+func updateMainPane() {
+	vd.paneMain.Clear()
 
 	n := ds.currentList()
 
 	title := fmt.Sprintf("[[ %v ]]", n.label)
-	tbprint(0, lidx, termbox.ColorWhite, termbox.ColorBlack, title)
-	lidx += 1
-	tbprint(0, lidx, coldef, coldef, strings.Repeat("=", len(title)))
-	lidx += 1
-
+	fmt.Fprintln(vd.paneMain, colorString(title, BG_BLACK, FG_WHITE, ";1"))
+	fmt.Fprintln(vd.paneMain, strings.Repeat("=", len(title)))
 	for _, item := range n.sublist {
 		pfx := pfxItem
 		if item == ds.idCurrentItem {
@@ -439,11 +494,8 @@ func redrawAll(ds *dataStore) {
 		if len(ds.nodes[item].sublist) > 0 {
 			sfx = " ..."
 		}
-		tbprint(0, lidx, coldef, coldef, pfx+ds.nodes[item].label+sfx)
-		lidx += 1
+		fmt.Fprintln(vd.paneMain, pfx+ds.nodes[item].label+sfx)
 	}
-
-	termbox.Flush()
 }
 
 func readKey() byte {
@@ -473,10 +525,21 @@ func readString() string {
 	return text
 }
 
+func colorString(s string, fg, bg int, extra string) string {
+	return fmt.Sprintf("\033[%d;%d%vm%v\033[0m", bg, fg, extra, s)
+}
+
+func min(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
+}
+
 ////////////////////////////////////////
 // COMMANDS
 
-func cmdAddItems(ds *dataStore) {
+func cmdAddItems(g *gocui.Gui, v *gocui.View) error {
 	for {
 		fmt.Print("Enter item: ")
 		text := strings.TrimRight(readString(), whitespace)
@@ -485,13 +548,17 @@ func cmdAddItems(ds *dataStore) {
 		}
 		ds.appendItem(text)
 	}
+	updateMainPane()
+	return nil
 }
 
-func cmdDeleteItem(ds *dataStore) {
+func cmdDeleteItem(g *gocui.Gui, v *gocui.View) error {
 	ds.deleteItem()
+	updateMainPane()
+	return nil
 }
 
-func cmdMoveItem(ds *dataStore) {
+func cmdMoveItem(g *gocui.Gui, v *gocui.View) error {
 	idx := ds.currentItemIndex()
 	max_idx := len(ds.currentList().sublist) - 1
 
@@ -517,35 +584,49 @@ func cmdMoveItem(ds *dataStore) {
 			ds.moveItemToIndex(max_idx)
 		}
 	}
+	updateMainPane()
+	return nil
 }
 
-func cmdNextItem(ds *dataStore) {
+func cmdNextItem(g *gocui.Gui, v *gocui.View) error {
 	ds.nextItem()
+	updateMainPane()
+	return nil
 }
 
-func cmdPrevItem(ds *dataStore) {
+func cmdPrevItem(g *gocui.Gui, v *gocui.View) error {
 	ds.prevItem()
+	updateMainPane()
+	return nil
 }
 
-func cmdDescend(ds *dataStore) {
+func cmdDescend(g *gocui.Gui, v *gocui.View) error {
 	ds.focusDescend()
+	updateMainPane()
+	return nil
 }
 
-func cmdAscend(ds *dataStore) {
+func cmdAscend(g *gocui.Gui, v *gocui.View) error {
 	ds.focusAscend()
+	updateMainPane()
+	return nil
 }
 
-func cmdReplaceItem(ds *dataStore) {
+func cmdReplaceItem(g *gocui.Gui, v *gocui.View) error {
 	fmt.Printf("Replace with: ")
 	ds.replaceItem(readString())
+	updateMainPane()
+	return nil
 }
 
-func cmdSaveData(ds *dataStore) {
+func cmdSaveData(g *gocui.Gui, v *gocui.View) error {
 	ds.save()
+	return nil
 }
 
-func cmdLoadData(ds *dataStore) {
+func cmdLoadData(g *gocui.Gui, v *gocui.View) error {
 	ds.load()
+	return nil
 }
 
 ////////////////////////////////////////
@@ -564,10 +645,70 @@ func pushBack(l *[]string, s string) {
 ////////////////////////////////////////
 // main
 
+func keybindings(g *gocui.Gui, ds *dataStore) error {
+	// backup keybinding to quit
+	if err := g.SetKeybinding("", gocui.KeyCtrlC, gocui.ModNone, quit); err != nil {
+		log.Panicln(err)
+	}
+
+	if err := g.SetKeybinding("main", 'q', gocui.ModNone, quit); err != nil {
+		return err
+	}
+	if err := g.SetKeybinding("main", 'j', gocui.ModNone, cmdNextItem); err != nil {
+		return err
+	}
+	if err := g.SetKeybinding("main", 'k', gocui.ModNone, cmdPrevItem); err != nil {
+		return err
+	}
+	if err := g.SetKeybinding("main", 'a', gocui.ModNone, cmdAddItems); err != nil {
+		return err
+	}
+	if err := g.SetKeybinding("main", 'D', gocui.ModNone, cmdDeleteItem); err != nil {
+		return err
+	}
+	if err := g.SetKeybinding("main", 'r', gocui.ModNone, cmdReplaceItem); err != nil {
+		return err
+	}
+	if err := g.SetKeybinding("main", '<', gocui.ModNone, cmdAscend); err != nil {
+		return err
+	}
+	if err := g.SetKeybinding("main", 'u', gocui.ModNone, cmdAscend); err != nil {
+		return err
+	}
+	if err := g.SetKeybinding("main", '>', gocui.ModNone, cmdDescend); err != nil {
+		return err
+	}
+	if err := g.SetKeybinding("main", gocui.KeyEnter, gocui.ModNone, cmdDescend); err != nil {
+		return err
+	}
+	if err := g.SetKeybinding("main", 'S', gocui.ModNone, cmdSaveData); err != nil {
+		return err
+	}
+	if err := g.SetKeybinding("main", 'L', gocui.ModNone, cmdLoadData); err != nil {
+		return err
+	}
+
+	/*
+		case 'm':
+			cmdMoveItem(&ds)
+	*/
+
+	if err := g.SetKeybinding("", gocui.KeyCtrlL, gocui.ModNone,
+		func(g *gocui.Gui, v *gocui.View) error {
+			return termbox.Sync()
+		}); err != nil {
+		panic(err)
+	}
+
+	return nil
+}
+
+func quit(g *gocui.Gui, v *gocui.View) error {
+	return gocui.ErrQuit
+}
+
 func main() {
 	flag.Parse()
-
-	var ds dataStore
 
 	if _, err := os.Stat(*filename); err == nil {
 		ds.load()
@@ -576,62 +717,23 @@ func main() {
 		ds.init()
 	}
 
-	// set up UI
-	err := termbox.Init()
+	g, err := gocui.NewGui(gocui.OutputNormal)
 	if err != nil {
-		panic(err)
+		log.Panicln(err)
 	}
-	defer termbox.Close()
-	termbox.SetInputMode(termbox.InputEsc)
+	defer g.Close()
 
-	redrawAll(&ds)
+	g.SetManagerFunc(layout)
 
-mainloop:
-	for {
-		switch ev := termbox.PollEvent(); ev.Type {
-		case termbox.EventKey:
-			// TODO: need to combine Key & Ch switches
-			switch ev.Key {
-			case termbox.KeyEsc:
-				break mainloop
-			case termbox.KeyEnter:
-				cmdDescend(&ds)
-			default:
-				// if no special key, switch on character
-				switch ev.Ch {
-				case 'q':
-					break mainloop
-				case 'a':
-					cmdAddItems(&ds)
-				case 'D':
-					cmdDeleteItem(&ds)
-				case 'm':
-					cmdMoveItem(&ds)
-				case 'j':
-					cmdNextItem(&ds)
-				case 'k':
-					cmdPrevItem(&ds)
-				case '>':
-					cmdDescend(&ds)
-				case 'r':
-					cmdReplaceItem(&ds)
-				case 'u',
-					'<':
-					cmdAscend(&ds)
-				case 'S':
-					cmdSaveData(&ds)
-				case 'L':
-					cmdLoadData(&ds)
-				default:
-					// TODO: print something to echo area
-					fmt.Println("  unknown command")
-				}
-			}
-		case termbox.EventError:
-			panic(ev.Err)
-		}
-		redrawAll(&ds)
+	if err := keybindings(g, &ds); err != nil {
+		log.Panicln(err)
 	}
+
+	if err := g.MainLoop(); err != nil && err != gocui.ErrQuit {
+		log.Panicln(err)
+	}
+
+	// TODO: do not use 'fmt', probably won't play nice w/gocui
 	fmt.Printf("Quitting... ")
 	if ds.dirty {
 		fmt.Printf("save first? [y/n] ")
