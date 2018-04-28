@@ -6,10 +6,7 @@
 // - explore going back to 'sublist' being []*node, rather than []int of IDs
 // - start using the list for actual TODOs
 // - list of recent *.lol files edited should itself be a list under root
-// - provide convenience routine to get at sublist based on node ID
 // - every save, renumber node IDs to compact them, to remove holes.
-// - do "safe" saves, in that first write to temp file, and only if success,
-//   rename and replace old version
 
 package main
 
@@ -584,7 +581,7 @@ func main() {
 			cmdPrint(&ds)
 		case 'a':
 			cmdAddItems(&ds)
-		case 'd':
+		case 'D':
 			cmdDeleteItem(&ds)
 		case 'm':
 			cmdMoveItem(&ds)
