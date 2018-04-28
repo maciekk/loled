@@ -2,10 +2,10 @@
 //
 // TODO
 // - add 'r'eplace command, which replaces label on existing node
+// - add "item move" commands: up, down, top, bottom
 // - add 'P'rint command, which prints the whole recursive tree.
 // - start using ncurses, so can do side-by-sides, etc.
 // - explore going back to 'sublist' being []*node, rather than []int of IDs
-// - better rendering of the items (e.g., list title, current item, prompt)
 // - start using the list for actual TODOs
 // - list of recent *.lol files edited should itself be a list under root
 // - provide convenience routine to get at sublist based on node ID
@@ -13,7 +13,6 @@
 // - do "safe" saves, in that first write to temp file, and only if success,
 //   rename and replace old version
 // - do backups on save, say to foo~
-// - add command to move current item up or down the list
 
 package main
 
@@ -140,6 +139,22 @@ func (ds *dataStore) appendItem(s string) {
 	ds.idCurrentItem = n.id
 
 	ds.dirty = true
+}
+
+// Replace the current item's label with the provided string.
+func (ds *dataStore) replaceItem(s string) {
+	if ds.idCurrentItem < 0 {
+		// No current item.
+		return
+	}
+
+	n, ok := ds.nodes[ds.idCurrentItem]
+
+	if !ok {
+		return
+	}
+
+	n.label = s
 }
 
 func (ds *dataStore) deleteItem() {
@@ -391,6 +406,12 @@ func cmdAscend(ds *dataStore) {
 	cmdPrint(ds)
 }
 
+func cmdReplaceItem(ds *dataStore) {
+	fmt.Printf("Replace with: ")
+	ds.replaceItem(readString())
+	cmdPrint(ds)
+}
+
 func cmdQuit(ds *dataStore) {
 	fmt.Printf("Quitting... ")
 	if ds.dirty {
@@ -472,6 +493,8 @@ func main() {
 		case '\n',
 			'>':
 			cmdDescend(&ds)
+		case 'r':
+			cmdReplaceItem(&ds)
 		case 'u',
 			'<':
 			cmdAscend(&ds)
