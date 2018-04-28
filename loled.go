@@ -144,8 +144,11 @@ type viewData struct {
 	// current list display
 	paneMain *gocui.View
 
-	// echo area
-	paneEcho *gocui.View
+	// echo area for messages
+	paneMessage *gocui.View
+
+	// dialog box (normally hidden)
+	paneDialog *gocui.View
 }
 
 type LolEditor struct {
@@ -169,7 +172,7 @@ func (le *LolEditor) MoveMode(v *gocui.View, key gocui.Key, ch rune, mod gocui.M
 
 	switch {
 	case ch == 'q' || key == gocui.KeyEnter:
-		fmt.Fprintln(vd.paneEcho, "Switched to MOVE mode.")
+		fmt.Fprintln(vd.paneMessage, "Switched to MOVE mode.")
 		le.modeMove = false
 	case ch == 'k':
 		if idx > 0 {
@@ -194,7 +197,7 @@ func (le *LolEditor) MoveMode(v *gocui.View, key gocui.Key, ch rune, mod gocui.M
 func (le *LolEditor) NormalMode(v *gocui.View, key gocui.Key, ch rune, mod gocui.Modifier) {
 	switch {
 	case ch == 'm':
-		fmt.Fprintln(vd.paneEcho, "Switched to NORMAL mode.")
+		fmt.Fprintln(vd.paneMessage, "Switched to NORMAL mode.")
 		le.modeMove = true
 		// TODO: use actually some of these MoveCursor commands on top of
 		// current manipulation of currentItem.
@@ -450,7 +453,7 @@ func (ds *dataStore) save() {
 	}
 
 	ds.dirty = false
-	fmt.Fprintf(vd.paneEcho, "Saved to %q.\n", *filename)
+	fmt.Fprintf(vd.paneMessage, "Saved to %q.\n", *filename)
 }
 
 func (ds *dataStore) load() {
@@ -557,17 +560,28 @@ func layout(g *gocui.Gui) error {
 		vd.paneMain = v
 		updateMainPane()
 	}
-	if v, err := g.SetView("echo", -1, maxY-3, maxX+1, maxY+1); err != nil {
+	if v, err := g.SetView("message", -1, maxY-3, maxX+1, maxY+1); err != nil {
 		if err != gocui.ErrUnknownView {
 			return err
 		}
 		v.Frame = true
 		v.Autoscroll = true
 		v.FgColor = gocui.ColorWhite
-		vd.paneEcho = v
+		vd.paneMessage = v
 
 		fmt.Fprintln(v, "Welcome.")
 	}
+	/*
+		const w = 40
+		const h = 3
+		if v, err := g.SetView("dialog", maxX/2-w/2, maxY/2-h/2, maxX/2+w/2, maxY/2+h/2); err != nil {
+			if err != gocui.ErrUnknownView {
+				return err
+			}
+			v.Frame = true
+			vd.paneDialog = v
+		}
+	*/
 	g.SetCurrentView("main")
 	return nil
 }
@@ -613,8 +627,8 @@ func readKey() byte {
 
 func readString() string {
 	reader := bufio.NewReader(os.Stdin)
-	text, _ := reader.ReadString('\n')
-	if text[len(text)-1] == '\n' {
+	text, _ := reader.ReadString('\r')
+	if text[len(text)-1] == '\n' || text[len(text)-1] == '\r' {
 		text = text[:len(text)-1]
 	}
 	return text
@@ -759,9 +773,11 @@ func main() {
 		log.Panicln(err)
 	}
 
-	// TODO: do not use 'fmt', probably won't play nice w/gocui
 	fmt.Printf("Quitting... ")
 	if ds.dirty {
+		// TODO: better dialog, using gocui
+		// FWIW, a yes/no dialog attempt by someone else:
+		//   https://aqatl.github.io/trego/2017/03/13/simple-prompt-dialog-in-gocui.html
 		fmt.Printf("save first? [y/n] ")
 		x := readString()
 		if strings.HasPrefix(x, "y") {
