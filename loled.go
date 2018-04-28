@@ -1,7 +1,6 @@
 // List of List (LOL) EDitor
 //
 // TODO
-// - add 'r'eplace command, which replaces label on existing node
 // - add "item move" commands: up, down, top, bottom
 // - add 'P'rint command, which prints the whole recursive tree.
 // - start using ncurses, so can do side-by-sides, etc.
