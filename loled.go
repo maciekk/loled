@@ -1,6 +1,7 @@
 // List of List (LOL) EDitor
 //
 // TODO
+// - auto-load on startup
 // - add "item move" commands: up, down, top, bottom
 // - add 'P'rint command, which prints the whole recursive tree.
 // - start using ncurses, so can do side-by-sides, etc.
@@ -95,9 +96,23 @@ func (ds *dataStore) init() {
 	ds.idCurrentItem = -1 // invalid == no current item
 }
 
+func (ds *dataStore) currentList() *node {
+	if ds.idCurrentList < 0 {
+		return nil
+	}
+
+	n, ok := ds.nodes[ds.idCurrentList]
+
+	if !ok {
+		return nil
+	}
+
+	return n
+}
+
 func (ds *dataStore) sprintCurrentList() []string {
 	var res []string
-	n := ds.nodes[ds.idCurrentList]
+	n := ds.currentList()
 
 	title := fmt.Sprintf("[[ %v ]]", n.label)
 	res = append(res, title)
@@ -131,7 +146,7 @@ func (ds *dataStore) appendItem(s string) {
 	}
 	ds.nodes[ds.freeID] = &n
 	ds.freeID += 1
-	kids := &ds.nodes[ds.idCurrentList].sublist
+	kids := &ds.currentList().sublist
 	*kids = append(*kids, n.id)
 
 	// Make the latest node the current one.
@@ -158,7 +173,7 @@ func (ds *dataStore) replaceItem(s string) {
 
 func (ds *dataStore) deleteItem() {
 	if ds.idCurrentItem >= 0 {
-		kids := &ds.nodes[ds.idCurrentList].sublist
+		kids := &ds.currentList().sublist
 		for i, id := range *kids {
 			if id == ds.idCurrentItem {
 				// First, update the current item.
@@ -183,7 +198,7 @@ func (ds *dataStore) deleteItem() {
 }
 
 func (ds *dataStore) nextItem() {
-	list := ds.nodes[ds.idCurrentList].sublist
+	list := ds.currentList().sublist
 	for i, id := range list {
 		if id == ds.idCurrentItem {
 			if i < len(list)-1 {
@@ -195,7 +210,7 @@ func (ds *dataStore) nextItem() {
 }
 
 func (ds *dataStore) prevItem() {
-	list := ds.nodes[ds.idCurrentList].sublist
+	list := ds.currentList().sublist
 	for i, id := range list {
 		if id == ds.idCurrentItem {
 			if i > 0 {
@@ -209,8 +224,8 @@ func (ds *dataStore) prevItem() {
 func (ds *dataStore) focusDescend() {
 	if ds.idCurrentItem >= 0 {
 		ds.idCurrentList = ds.idCurrentItem
-		if len(ds.nodes[ds.idCurrentList].sublist) > 0 {
-			ds.idCurrentItem = ds.nodes[ds.idCurrentList].sublist[0]
+		if len(ds.currentList().sublist) > 0 {
+			ds.idCurrentItem = ds.currentList().sublist[0]
 		} else {
 			// < 0 means no item selected
 			ds.idCurrentItem = -1
@@ -220,11 +235,11 @@ func (ds *dataStore) focusDescend() {
 }
 
 func (ds *dataStore) focusAscend() {
-	if ds.nodes[ds.idCurrentList].parent < 0 {
+	if ds.currentList().parent < 0 {
 		// Nothing to do if already at a root.
 		return
 	}
-	ds.idCurrentList, ds.idCurrentItem = ds.nodes[ds.idCurrentList].parent, ds.idCurrentList
+	ds.idCurrentList, ds.idCurrentItem = ds.currentList().parent, ds.idCurrentList
 }
 
 func (ds *dataStore) save() {
