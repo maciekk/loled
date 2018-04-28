@@ -153,6 +153,11 @@ func (ds *dataStore) printCurrentList() {
 }
 
 func (ds *dataStore) appendItem(s string) {
+	// sanity check
+	if _, ok := ds.nodes[ds.freeID]; ok {
+		panic("freeID is not free")
+	}
+
 	n := node{
 		ds.freeID,        // ID
 		s,                // payload
@@ -358,7 +363,7 @@ func (ds *dataStore) load() {
 		}
 
 		if ds.freeID <= id {
-			ds.freeID += 1
+			ds.freeID = id + 1
 		}
 
 		label := pop(&lines)
