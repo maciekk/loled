@@ -1,7 +1,6 @@
 // List of List (LOL) EDitor
 //
 // TODO
-// - add "item move" commands: up, down, top, bottom
 // - add 'P'rint command, which prints the whole recursive tree.
 // - start using ncurses, so can do side-by-sides, etc.
 // - explore going back to 'sublist' being []*node, rather than []int of IDs
@@ -111,6 +110,21 @@ func (ds *dataStore) currentList() *node {
 	return n
 }
 
+func (ds *dataStore) currentItemIndex() int {
+	if ds.idCurrentItem < 0 {
+		// Error.
+		return -1
+	}
+
+	for i, k := range ds.currentList().sublist {
+		if k == ds.idCurrentItem {
+			return i
+		}
+	}
+
+	panic("Current item not on current list.")
+}
+
 func (ds *dataStore) sprintCurrentList() []string {
 	var res []string
 	n := ds.currentList()
@@ -196,6 +210,30 @@ func (ds *dataStore) deleteItem() {
 			}
 		}
 	}
+}
+
+func (ds *dataStore) moveItemToIndex(idxNew int) {
+	idx := ds.currentItemIndex()
+	if idx == idxNew {
+		return
+	}
+
+	newSublist := make([]int, 0)
+	for _, k := range ds.currentList().sublist {
+		if k == ds.idCurrentItem {
+			continue
+		}
+		if len(newSublist) == idxNew {
+			newSublist = append(newSublist, ds.idCurrentItem)
+		}
+		newSublist = append(newSublist, k)
+	}
+	// Could be being placed as last item.
+	if len(newSublist) == idxNew {
+		newSublist = append(newSublist, ds.idCurrentItem)
+	}
+	ds.currentList().sublist = newSublist
+	ds.dirty = true
 }
 
 func (ds *dataStore) nextItem() {
@@ -407,6 +445,35 @@ func cmdDeleteItem(ds *dataStore) {
 	cmdPrint(ds)
 }
 
+func cmdMoveItem(ds *dataStore) {
+	idx := ds.currentItemIndex()
+	max_idx := len(ds.currentList().sublist) - 1
+
+	// Select WHERE TO move item.
+	key := readKey()
+	switch key {
+	case 'k':
+		if idx > 0 {
+			ds.moveItemToIndex(idx - 1)
+		}
+	case 'K',
+		'0':
+		if idx > 0 {
+			ds.moveItemToIndex(0)
+		}
+	case 'j':
+		if idx < max_idx {
+			ds.moveItemToIndex(idx + 1)
+		}
+	case 'J',
+		'-':
+		if idx < max_idx {
+			ds.moveItemToIndex(max_idx)
+		}
+	}
+	cmdPrint(ds)
+}
+
 func cmdNextItem(ds *dataStore) {
 	ds.nextItem()
 	cmdPrint(ds)
@@ -514,6 +581,8 @@ func main() {
 			cmdAddItems(&ds)
 		case 'd':
 			cmdDeleteItem(&ds)
+		case 'm':
+			cmdMoveItem(&ds)
 		case 'j':
 			cmdNextItem(&ds)
 		case 'k':
