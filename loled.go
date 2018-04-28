@@ -1,12 +1,23 @@
 // List of List (LOL) EDitor
 //
 // TODO
-// - add 'P'rint command, which prints the whole recursive tree.
+// - need ability to tag multiple items in current list
+// - ... then command to push tagged items as sublists under new item within
+//   current list
+// - want GNU readline capabilities for editing longer text lines (e.g., new
+//   item entry)
+// - keep these TODOs a *.lol (i.e., dogfood)?
 // - start using ncurses, so can do side-by-sides, etc.
+// - soon will need to figure out how to handle lists too long for screen
+//   height (i.e., scrolling)
+// - add 'P'rint command, which prints the whole recursive tree? still needed
+//   w/ncurses?
 // - explore going back to 'sublist' being []*node, rather than []int of IDs
-// - start using the list for actual TODOs
 // - list of recent *.lol files edited should itself be a list under root
 // - every save, renumber node IDs to compact them, to remove holes.
+//
+// NOTES
+// - See https://appliedgo.net/tui/ for review of potential TUIs to use.
 
 package main
 
@@ -14,8 +25,7 @@ import (
 	"bufio"
 	"flag"
 	"fmt"
-	// If ever want to use ncurses, module below.
-	//"github.com/rthornton128/goncurses"
+	termbox "github.com/nsf/termbox-go"
 	"io/ioutil"
 	"os"
 	"os/exec"
@@ -120,33 +130,6 @@ func (ds *dataStore) currentItemIndex() int {
 	}
 
 	panic("Current item not on current list.")
-}
-
-func (ds *dataStore) sprintCurrentList() []string {
-	var res []string
-	n := ds.currentList()
-
-	title := fmt.Sprintf("[[ %v ]]", n.label)
-	res = append(res, title)
-	res = append(res, strings.Repeat("=", len(title)))
-	for _, item := range n.sublist {
-		pfx := pfxItem
-		if item == ds.idCurrentItem {
-			pfx = pfxFocusedItem
-		}
-		sfx := ""
-		if len(ds.nodes[item].sublist) > 0 {
-			sfx = " ..."
-		}
-		res = append(res, pfx+ds.nodes[item].label+sfx)
-	}
-	return res
-}
-
-func (ds *dataStore) printCurrentList() {
-	for _, s := range ds.sprintCurrentList() {
-		fmt.Println(s)
-	}
 }
 
 func (ds *dataStore) appendItem(s string) {
@@ -411,6 +394,76 @@ func (ds *dataStore) load() {
 	fmt.Printf("Loaded %q.\n", *filename)
 }
 
+////////////////////////////////////////
+// User Interface functions
+
+// Stolen from Termbox's boxed demo app.
+func tbprint(x, y int, fg, bg termbox.Attribute, msg string) {
+	for _, c := range msg {
+		termbox.SetCell(x, y, c, fg, bg)
+		x += 1 // TODO: at some point consider rune width
+	}
+}
+
+// Stolen from Termbox's boxed demo app.
+func fill(x, y, w, h int, cell termbox.Cell) {
+	for ly := 0; ly < h; ly++ {
+		for lx := 0; lx < w; lx++ {
+			termbox.SetCell(x+lx, y+ly, cell.Ch, cell.Fg, cell.Bg)
+		}
+	}
+}
+
+func redrawAll(ds *dataStore) {
+	const coldef = termbox.ColorDefault
+	termbox.Clear(coldef, coldef)
+	//w, h := termbox.Size()
+
+	// current line being printed
+	lidx := 0
+
+	n := ds.currentList()
+
+	title := fmt.Sprintf("[[ %v ]]", n.label)
+	tbprint(0, lidx, termbox.ColorWhite, termbox.ColorBlack, title)
+	lidx += 1
+	tbprint(0, lidx, coldef, coldef, strings.Repeat("=", len(title)))
+	lidx += 1
+
+	for _, item := range n.sublist {
+		pfx := pfxItem
+		if item == ds.idCurrentItem {
+			pfx = pfxFocusedItem
+		}
+		sfx := ""
+		if len(ds.nodes[item].sublist) > 0 {
+			sfx = " ..."
+		}
+		tbprint(0, lidx, coldef, coldef, pfx+ds.nodes[item].label+sfx)
+		lidx += 1
+	}
+
+	termbox.Flush()
+}
+
+func readKey() byte {
+	// Source: https://stackoverflow.com/questions/15159118/read-a-character-from-standard-input-in-go-without-pressing-enter
+
+	// NOTE: original had "-F", but on OSX it seems to be "-f".
+
+	// disable input buffering
+	exec.Command("/bin/stty", "-f", "/dev/tty", "cbreak", "min", "1").Run()
+	// do not display entered characters on the screen
+	exec.Command("/bin/stty", "-f", "/dev/tty", "-echo").Run()
+
+	defer exec.Command("/bin/stty", "-f", "/dev/tty", "echo").Run()
+
+	var b []byte = make([]byte, 1)
+	os.Stdin.Read(b)
+
+	return b[0]
+}
+
 func readString() string {
 	reader := bufio.NewReader(os.Stdin)
 	text, _ := reader.ReadString('\n')
@@ -420,16 +473,8 @@ func readString() string {
 	return text
 }
 
-func clearScreen() {
-	cmd := exec.Command("/usr/bin/clear") // TODO: make OS-agnostic
-	cmd.Stdout = os.Stdout
-	cmd.Run()
-}
-
-func cmdPrint(ds *dataStore) {
-	clearScreen()
-	ds.printCurrentList()
-}
+////////////////////////////////////////
+// COMMANDS
 
 func cmdAddItems(ds *dataStore) {
 	for {
@@ -444,7 +489,6 @@ func cmdAddItems(ds *dataStore) {
 
 func cmdDeleteItem(ds *dataStore) {
 	ds.deleteItem()
-	cmdPrint(ds)
 }
 
 func cmdMoveItem(ds *dataStore) {
@@ -473,46 +517,27 @@ func cmdMoveItem(ds *dataStore) {
 			ds.moveItemToIndex(max_idx)
 		}
 	}
-	cmdPrint(ds)
 }
 
 func cmdNextItem(ds *dataStore) {
 	ds.nextItem()
-	cmdPrint(ds)
 }
 
 func cmdPrevItem(ds *dataStore) {
 	ds.prevItem()
-	cmdPrint(ds)
 }
 
 func cmdDescend(ds *dataStore) {
 	ds.focusDescend()
-	cmdPrint(ds)
 }
 
 func cmdAscend(ds *dataStore) {
 	ds.focusAscend()
-	cmdPrint(ds)
 }
 
 func cmdReplaceItem(ds *dataStore) {
 	fmt.Printf("Replace with: ")
 	ds.replaceItem(readString())
-	cmdPrint(ds)
-}
-
-func cmdQuit(ds *dataStore) {
-	fmt.Printf("Quitting... ")
-	if ds.dirty {
-		fmt.Printf("save first? [y/n] ")
-		x := readString()
-		if strings.HasPrefix(x, "y") {
-			ds.save()
-		}
-	}
-	fmt.Println()
-	os.Exit(0)
 }
 
 func cmdSaveData(ds *dataStore) {
@@ -523,23 +548,8 @@ func cmdLoadData(ds *dataStore) {
 	ds.load()
 }
 
-func readKey() byte {
-	// Source: https://stackoverflow.com/questions/15159118/read-a-character-from-standard-input-in-go-without-pressing-enter
-
-	// NOTE: original had "-F", but on OSX it seems to be "-f".
-
-	// disable input buffering
-	exec.Command("/bin/stty", "-f", "/dev/tty", "cbreak", "min", "1").Run()
-	// do not display entered characters on the screen
-	exec.Command("/bin/stty", "-f", "/dev/tty", "-echo").Run()
-
-	defer exec.Command("/bin/stty", "-f", "/dev/tty", "echo").Run()
-
-	var b []byte = make([]byte, 1)
-	os.Stdin.Read(b)
-
-	return b[0]
-}
+////////////////////////////////////////
+// string manipulation
 
 func pop(l *[]string) string {
 	v := (*l)[0]
@@ -550,6 +560,9 @@ func pop(l *[]string) string {
 func pushBack(l *[]string, s string) {
 	*l = append(*l, s)
 }
+
+////////////////////////////////////////
+// main
 
 func main() {
 	flag.Parse()
@@ -562,47 +575,69 @@ func main() {
 		fmt.Printf("Unable to stat %q; creating empty dataStore instead.\n", *filename)
 		ds.init()
 	}
-	ds.printCurrentList()
 
-	// interaction loop
+	// set up UI
+	err := termbox.Init()
+	if err != nil {
+		panic(err)
+	}
+	defer termbox.Close()
+	termbox.SetInputMode(termbox.InputEsc)
+
+	redrawAll(&ds)
+
+mainloop:
 	for {
-		fmt.Printf(cmdPrompt)
-		//switch readString()[0] {
-		//switch stdscr.GetChar() {
-		key := readKey()
-		// Echo the key, as echo is turned off.
-		// FWIW, longer term we may print something more.
-		fmt.Printf("%c\n", key)
-
-		switch key {
-		case 'q':
-			cmdQuit(&ds)
-		case 'p':
-			cmdPrint(&ds)
-		case 'a':
-			cmdAddItems(&ds)
-		case 'D':
-			cmdDeleteItem(&ds)
-		case 'm':
-			cmdMoveItem(&ds)
-		case 'j':
-			cmdNextItem(&ds)
-		case 'k':
-			cmdPrevItem(&ds)
-		case '\n',
-			'>':
-			cmdDescend(&ds)
-		case 'r':
-			cmdReplaceItem(&ds)
-		case 'u',
-			'<':
-			cmdAscend(&ds)
-		case 'S':
-			cmdSaveData(&ds)
-		case 'L':
-			cmdLoadData(&ds)
-		default:
-			fmt.Println("  unknown command")
+		switch ev := termbox.PollEvent(); ev.Type {
+		case termbox.EventKey:
+			// TODO: need to combine Key & Ch switches
+			switch ev.Key {
+			case termbox.KeyEsc:
+				break mainloop
+			case termbox.KeyEnter:
+				cmdDescend(&ds)
+			default:
+				// if no special key, switch on character
+				switch ev.Ch {
+				case 'q':
+					break mainloop
+				case 'a':
+					cmdAddItems(&ds)
+				case 'D':
+					cmdDeleteItem(&ds)
+				case 'm':
+					cmdMoveItem(&ds)
+				case 'j':
+					cmdNextItem(&ds)
+				case 'k':
+					cmdPrevItem(&ds)
+				case '>':
+					cmdDescend(&ds)
+				case 'r':
+					cmdReplaceItem(&ds)
+				case 'u',
+					'<':
+					cmdAscend(&ds)
+				case 'S':
+					cmdSaveData(&ds)
+				case 'L':
+					cmdLoadData(&ds)
+				default:
+					// TODO: print something to echo area
+					fmt.Println("  unknown command")
+				}
+			}
+		case termbox.EventError:
+			panic(ev.Err)
+		}
+		redrawAll(&ds)
+	}
+	fmt.Printf("Quitting... ")
+	if ds.dirty {
+		fmt.Printf("save first? [y/n] ")
+		x := readString()
+		if strings.HasPrefix(x, "y") {
+			ds.save()
 		}
 	}
 }

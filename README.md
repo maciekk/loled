@@ -20,6 +20,7 @@ Random thoughts:
 - once you leave current list (go up or down), reset tagged list?
 - "tagged" is less a property of the items themselves, and more a property of
   "current view", closer to "current list" and "current item" signals
+    - i.e., more a View than Model of MVC paradigm
 - display: in current non-ncurses approach, display using "- [TAG]"
     - specifically cannot simply replace the "-" since collision with current
       item indicator, which would hide the tag
