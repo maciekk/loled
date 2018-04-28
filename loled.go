@@ -11,7 +11,6 @@
 // - every save, renumber node IDs to compact them, to remove holes.
 // - do "safe" saves, in that first write to temp file, and only if success,
 //   rename and replace old version
-// - do backups on save, say to foo~
 
 package main
 
@@ -29,7 +28,10 @@ import (
 	"strings"
 )
 
-var filename = flag.String("f", "./lol.txt", "Filename to use for saving and loading")
+var filename = flag.String("f", "./lol.txt",
+	"Filename to use for saving and loading.")
+var backupSuffix = flag.String("b", "~",
+	"Suffix to append to filename for backups. Use empty string to turn off backups.")
 
 var cmdPrompt = "$ "
 var whitespace = " 	\n\r"
@@ -242,6 +244,12 @@ func (ds *dataStore) focusAscend() {
 }
 
 func (ds *dataStore) save() {
+	// First, if file exists, attempt to move old version to backup
+	// filename.
+	if _, err := os.Stat(*filename); err == nil && *backupSuffix != "" {
+		exec.Command("cp", "-a", *filename, *filename+*backupSuffix).Run()
+	}
+
 	f, err := os.Create(*filename)
 	defer f.Close()
 
