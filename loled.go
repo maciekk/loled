@@ -1,12 +1,13 @@
 // List of List (LOL) EDitor
 //
 // TODO
+// - provide Ungroup
+// - show log in side window
+// - delete should delete all tagged items in current list if any are tagged,
+//   and only otherwise the current item
+// - set up proper Vim folding in this file
+// - split up this file into pieces (e.g., main.go, datastore.go, ui.go)
 // - when deleting item, need special handling if its sublist is not empty!
-// - need ability to tag multiple items in current list
-// - ... then command to push tagged items as sublists under new item within
-//   current list
-// - want GNU readline capabilities for editing longer text lines (e.g., new
-//   item entry)
 // - keep these TODOs a *.lol (i.e., dogfood)?
 // - soon will need to figure out how to handle lists too long for screen
 //   height (i.e., scrolling)
@@ -16,6 +17,7 @@
 // - ASCII-ify "so excited" happy face, use as initial logo?
 //   http://1.bp.blogspot.com/_xmWIUzqxRic/TMmpH4J0iKI/AAAAAAAAABY/CLvy4P5AowA/s200/happy-face-770659.png
 // - alas, would require width ~50 for good recognition, which might be too large
+// - long term would love undo functionality
 //
 // NOTES
 // - See https://appliedgo.net/tui/ for review of potential TUIs to use.
@@ -113,6 +115,8 @@ type node struct {
 	parent int
 	// list of children IDs
 	sublist []int
+	// Is it tagged?
+	tagged bool
 }
 
 // The "Model" component of MVC framework.
@@ -233,10 +237,22 @@ func (le *LolEditor) NormalMode(v *gocui.View, key gocui.Key, ch rune, mod gocui
 		cmdSaveData()
 	case ch == 'L':
 		cmdLoadData()
+	case ch == 't' || key == gocui.KeySpace:
+		cmdToggleItem()
+	case key == gocui.KeyCtrlT:
+		// Can't use gocuy.KeyCtrlSpace as it == 0 / matches most
+		// regular keypresses (because key == 0 then)
+		cmdToggleAllItems()
+	case ch == 'g':
+		cmdGroupItems()
+	case ch == 'G':
+		cmdUngroupItems()
 		/*
 			case ch == 'q':
 				quit()
 		*/
+	default:
+		fmt.Printf("\007")
 	}
 }
 
@@ -309,6 +325,7 @@ func (ds *dataStore) init() {
 		"root",
 		-1, // invalid parent id (i.e., no parent)
 		make([]int, 0),
+		false, // tagged
 	}
 	ds.nodes = make(map[int]*node, 1)
 	ds.nodes[0] = &root
@@ -320,16 +337,18 @@ func (ds *dataStore) init() {
 }
 
 func (ds *dataStore) currentList() *node {
-	if ds.idCurrentList < 0 {
-		return nil
-	}
-
 	n, ok := ds.nodes[ds.idCurrentList]
-
 	if !ok {
 		return nil
 	}
+	return n
+}
 
+func (ds *dataStore) currentItem() *node {
+	n, ok := ds.nodes[ds.idCurrentItem]
+	if !ok {
+		return nil
+	}
 	return n
 }
 
@@ -352,6 +371,14 @@ func (ds *dataStore) currentItemIndex() int {
 	panic("Current item not on current list.")
 }
 
+func insertKid(newkid int, kids *[]int, pos int) {
+	// Sigh, Go has gross item insertion.
+
+	*kids = append(*kids, -1) // extend length by 1
+	copy((*kids)[pos+1:], (*kids)[pos:])
+	(*kids)[pos] = newkid
+}
+
 func (ds *dataStore) appendItem(s string) {
 	// sanity check
 	if _, ok := ds.nodes[ds.freeID]; ok {
@@ -363,15 +390,13 @@ func (ds *dataStore) appendItem(s string) {
 		s,                // payload
 		ds.idCurrentList, // parent
 		make([]int, 0),   // sublist
+		false,            // tagged
 	}
 	ds.nodes[ds.freeID] = &n
 	ds.freeID += 1
 	kids := ds.currentItems()
 	i := ds.currentItemIndex()
-	// Sigh, Go has gross item insertion.
-	*kids = append(*kids, -1)
-	copy((*kids)[i+2:], (*kids)[i+1:])
-	(*kids)[i+1] = n.id
+	insertKid(n.id, kids, i+1)
 
 	// Make the latest node the current one.
 	ds.idCurrentItem = n.id
@@ -418,6 +443,99 @@ func (ds *dataStore) deleteItem() {
 	// Make sure index is still valid
 	i = min(i, len(*kids)-1)
 	ds.idCurrentItem = (*kids)[i]
+
+	ds.dirty = true
+}
+
+func (ds *dataStore) toggleItem() {
+	if ds.idCurrentItem < 0 {
+		// no items
+		return
+	}
+
+	ds.currentItem().tagged = !ds.currentItem().tagged
+}
+
+func (ds *dataStore) toggleAllItems() {
+	if ds.idCurrentItem < 0 {
+		// no items
+		return
+	}
+
+	newval := !ds.currentItem().tagged
+	for _, id := range *ds.currentItems() {
+		ds.nodes[id].tagged = newval
+	}
+
+}
+
+func (ds *dataStore) ungroupItems() {
+	if ds.idCurrentItem < 0 || len(ds.currentItem().sublist) < 1 {
+		fmt.Fprintf(vd.paneMessage, "Current item invalid, or has no sublist.")
+		return
+	}
+
+	kids := ds.currentItems()
+	subkids := ds.currentItem().sublist
+
+	// Remove group node from kids.
+	i := ds.currentItemIndex()
+	*kids = append((*kids)[:i], (*kids)[i+1:]...)
+	delete(ds.nodes, ds.idCurrentItem)
+
+	// Add in the subkids at same index.
+	// Iterate in reverse so that end ordering stays unchanged.
+	for j := len(subkids) - 1; j >= 0; j-- {
+		insertKid(subkids[j], kids, i)
+	}
+
+	// Update current item.
+	ds.idCurrentItem = subkids[0]
+
+	ds.dirty = true
+}
+
+func (ds *dataStore) groupTaggedItemsUnder(name string) {
+	kids := ds.currentItems()
+	listTagged := []int{}
+	listUntagged := []int{}
+	idxFirstTagged := -1 // not set
+	for i, k := range *kids {
+		if ds.nodes[k].tagged {
+			// TODO: do we really want to clear the tag bit?
+			ds.nodes[k].tagged = false
+			if len(listTagged) == 0 {
+				idxFirstTagged = i
+			}
+			listTagged = append(listTagged, k)
+		} else {
+			listUntagged = append(listUntagged, k)
+		}
+	}
+
+	// Clean up current list.
+	*kids = listUntagged
+
+	// Create new node for group.
+	n := node{
+		ds.freeID,        // ID
+		name,             // payload
+		ds.idCurrentList, // parent
+		listTagged,       // sublist
+		false,            // tagged
+	}
+	ds.nodes[ds.freeID] = &n
+	ds.freeID += 1
+
+	// Insert the new node into current list.
+	i := idxFirstTagged
+	if i > len(*kids) {
+		i = len(*kids)
+	}
+	insertKid(n.id, kids, i)
+
+	// Adjust current item.
+	ds.idCurrentItem = n.id
 
 	ds.dirty = true
 }
@@ -605,6 +723,7 @@ func (ds *dataStore) load() {
 			label,
 			0, // parent; TBD
 			idKids,
+			false, // tagged
 		}
 		ds.nodes[id] = &n
 	}
@@ -692,6 +811,7 @@ func updateMainPane() {
 	fmt.Fprintln(vd.paneMain, colorString(title, BG_BLACK, FG_WHITE, ";1"))
 	fmt.Fprintln(vd.paneMain, strings.Repeat("=", len(title)))
 	for _, item := range n.sublist {
+		ni := ds.nodes[item]
 		pfx := pfxItem
 		if item == ds.idCurrentItem {
 			pfx = pfxFocusedItem
@@ -700,7 +820,11 @@ func updateMainPane() {
 		if len(ds.nodes[item].sublist) > 0 {
 			sfx = " ..."
 		}
-		fmt.Fprintln(vd.paneMain, pfx+ds.nodes[item].label+sfx)
+		line := pfx + ds.nodes[item].label + sfx
+		if ni.tagged {
+			line = colorString(line, BG_BLACK, FG_CYAN, "")
+		}
+		fmt.Fprintln(vd.paneMain, line)
 	}
 }
 
@@ -752,6 +876,31 @@ func cmdReplaceItem() {
 
 func cmdDeleteItem() {
 	ds.deleteItem()
+	updateMainPane()
+}
+
+func cmdToggleItem() {
+	ds.toggleItem()
+	cmdNextItem()
+	updateMainPane()
+}
+
+func cmdToggleAllItems() {
+	ds.toggleAllItems()
+	updateMainPane()
+}
+
+func cmdGroupItems() {
+	dlgEditor := dialog(vd.gui, "Group", "")
+	dlgEditor.multiline = false
+	dlgEditor.onFinish = func(ss []string) {
+		ds.groupTaggedItemsUnder(ss[0])
+		updateMainPane()
+	}
+}
+
+func cmdUngroupItems() {
+	ds.ungroupItems()
 	updateMainPane()
 }
 
