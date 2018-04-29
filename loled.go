@@ -288,6 +288,10 @@ type LineEditor struct {
 func fullerEditor(v *gocui.View, key gocui.Key, ch rune, mod gocui.Modifier) {
 	x, y := v.Cursor()
 	switch {
+	case key == gocui.KeyCtrlB:
+		v.MoveCursor(-1, 0, false)
+	case key == gocui.KeyCtrlF:
+		v.MoveCursor(+1, 0, false)
 	case key == gocui.KeyCtrlE:
 		// end of line
 		curLine, err := v.Line(y)
