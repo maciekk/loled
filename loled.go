@@ -1,10 +1,11 @@
 // List of List (LOL) EDitor
 //
 // TODO
+// - rather than log, create custom/own func that prints to Message pane.
 // - visual revamp
 //   - better method for printing color strings, w/o ANSII escapes
-//   - make layout more pleasing to eye
 // - fix gocui off-by-one bug w/256 color setting in SelFgCol and SelBgCol
+//   (possibly bug in termbox-go underneath gocui)
 // - provide high level overview of major classes and their relationships in
 //   top-of-file comment here (above TODO section)
 // - show log in side window
@@ -56,8 +57,18 @@ var backupSuffix = flag.String("b", "~",
 var cmdPrompt = "$ "
 var whitespace = " 	\n\r"
 
+// source: http://patorjk.com/software/taag/#p=display&f=Ivrit&t=LoLEd
+const logo = `
+ _          _     _____    _          ___   ___
+| |    ___ | |   | ____|__| | __   __/ _ \ / _ \
+| |   / _ \| |   |  _| / _` + "`" + ` | \ \ / / | | | | | |
+| |__| (_) | |___| |__| (_| |  \ V /| |_| | |_| |
+|_____\___/|_____|_____\__,_|   \_/  \___(_)___/
+`
+
 var pfxItem = "- " // used in both, disk & screen
 var pfxFocusedItem = ">>"
+var pfxFocusedMovingItem = "▲▼"
 var sfxMore = " ▼"
 
 func Warning(s string) {
@@ -163,6 +174,9 @@ type viewData struct {
 
 	// dialog box (normally hidden)
 	paneDialog *gocui.View
+
+	// primary editor
+	editorLol *LolEditor
 }
 
 type LolEditor struct {
@@ -189,6 +203,7 @@ func (le *LolEditor) MoveMode(v *gocui.View, key gocui.Key, ch rune, mod gocui.M
 	case ch == 'q' || key == gocui.KeyEnter:
 		fmt.Fprintln(vd.paneMessage, "Switched to NORMAL mode.")
 		le.modeMove = false
+		updateMainPane()
 	case ch == 'k':
 		if idx > 0 {
 			new_idx = idx - 1
@@ -219,19 +234,7 @@ func (le *LolEditor) NormalMode(v *gocui.View, key gocui.Key, ch rune, mod gocui
 	case ch == 'm':
 		fmt.Fprintln(vd.paneMessage, "Switched to MOVE mode.")
 		le.modeMove = true
-		// TODO: use actually some of these MoveCursor commands on top of
-		// current manipulation of currentItem.
-		/*
-			case ch == 'j':
-				v.MoveCursor(0, 1, false)
-			case ch == 'k':
-				v.MoveCursor(0, -1, false)
-			case ch == 'h':
-				v.MoveCursor(-1, 0, false)
-			case ch == 'l':
-				v.MoveCursor(1, 0, false)
-			}
-		*/
+		updateMainPane()
 	case ch == 'j':
 		cmdNextItem()
 	case ch == 'k':
@@ -295,6 +298,12 @@ func fullerEditor(v *gocui.View, key gocui.Key, ch rune, mod gocui.Modifier) {
 	case key == gocui.KeyCtrlA:
 		// beginning of line
 		v.MoveCursor(-x, 0, false)
+	case key == gocui.KeyCtrlU:
+		// erase to beginning of line
+		for x > 0 {
+			v.EditDelete(true)
+			x, y = v.Cursor()
+		}
 	default:
 		// If we didn't handle key above, pass through to base editor.
 		gocui.DefaultEditor.Edit(v, key, ch, mod)
@@ -841,11 +850,13 @@ func dialog(g *gocui.Gui, title, prefill string) *LineEditor {
 
 func layout(g *gocui.Gui) error {
 	maxX, maxY := g.Size()
-	if v, err := g.SetView("main", 0, 0, min(PANE_MAIN_MAX_WIDTH, maxX-2), maxY-3-1); err != nil {
+	mainPaneWidth := min(PANE_MAIN_MAX_WIDTH, maxX-2)
+	if v, err := g.SetView("main", 0, 0, mainPaneWidth, maxY-3-1); err != nil {
 		if err != gocui.ErrUnknownView {
 			return err
 		}
-		v.Editor = &LolEditor{}
+		vd.editorLol = &LolEditor{}
+		v.Editor = vd.editorLol
 		v.Editable = true
 		v.Highlight = false // to be toggled on once list has items
 		// To pick colors from 256, see:
@@ -863,15 +874,18 @@ func layout(g *gocui.Gui) error {
 			ds.setCurrentItemIndex(0)
 		}
 	}
-	if v, err := g.SetView("message", -1, maxY-3, maxX+1, maxY+1); err != nil {
+	if v, err := g.SetView("message", mainPaneWidth+1+4, 0, maxX-1, maxY/2); err != nil {
 		if err != gocui.ErrUnknownView {
 			return err
 		}
-		v.Frame = true
+		v.Frame = false
+		v.Title = "log"
 		v.Autoscroll = true
-		v.FgColor = gocui.ColorWhite
+		v.FgColor = 240
 		vd.paneMessage = v
 
+		fmt.Fprintln(v, logo)
+		fmt.Fprintln(v, "")
 		fmt.Fprintln(v, "Welcome.")
 	}
 	return nil
@@ -890,7 +904,11 @@ func updateMainPane() {
 		ni := ds.nodes[item]
 		pfx := pfxItem
 		if item == ds.idCurrentItem {
-			pfx = pfxFocusedItem
+			if vd.editorLol.modeMove {
+				pfx = pfxFocusedMovingItem
+			} else {
+				pfx = pfxFocusedItem
+			}
 		}
 		sfx := ""
 		if len(ds.nodes[item].sublist) > 0 {
