@@ -1,7 +1,6 @@
 // List of List (LOL) EDitor
 //
 // TODO
-// - add item right after currentItem, rather than always at end
 // - when deleting item, need special handling if its sublist is not empty!
 // - need ability to tag multiple items in current list
 // - ... then command to push tagged items as sublists under new item within
@@ -9,11 +8,8 @@
 // - want GNU readline capabilities for editing longer text lines (e.g., new
 //   item entry)
 // - keep these TODOs a *.lol (i.e., dogfood)?
-// - start using ncurses, so can do side-by-sides, etc.
 // - soon will need to figure out how to handle lists too long for screen
 //   height (i.e., scrolling)
-// - add 'P'rint command, which prints the whole recursive tree? still needed
-//   w/ncurses?
 // - explore going back to 'sublist' being []*node, rather than []int of IDs
 // - list of recent *.lol files edited should itself be a list under root
 // - every save, renumber node IDs to compact them, to remove holes.
@@ -141,6 +137,9 @@ type dataStore struct {
 
 // The "View" component of MVC framework.
 type viewData struct {
+	// gui in use
+	gui *gocui.Gui
+
 	// current list display
 	paneMain *gocui.View
 
@@ -216,6 +215,10 @@ func (le *LolEditor) NormalMode(v *gocui.View, key gocui.Key, ch rune, mod gocui
 		cmdNextItem()
 	case ch == 'k':
 		cmdPrevItem()
+	case ch == 'J' || ch == '$':
+		cmdLastItem()
+	case ch == 'K' || ch == '0':
+		cmdFirstItem()
 	case ch == 'a':
 		cmdAddItems()
 	case ch == 'D':
@@ -234,6 +237,57 @@ func (le *LolEditor) NormalMode(v *gocui.View, key gocui.Key, ch rune, mod gocui
 			case ch == 'q':
 				quit()
 		*/
+	}
+}
+
+type dialogCallback func([]string)
+
+type LineEditor struct {
+	multiline bool
+	onFinish  dialogCallback
+}
+
+// A beefed up version of 'simpleEditor' that resembles Emacs-like bindings
+// that are on by default with GNU readline, shells, etc.
+func fullerEditor(v *gocui.View, key gocui.Key, ch rune, mod gocui.Modifier) {
+	x, y := v.Cursor()
+	switch {
+	case key == gocui.KeyCtrlE:
+		// end of line
+		curLine, err := v.Line(y)
+		if err != nil {
+			panic(err)
+		}
+		v.MoveCursor(len(curLine)-x, 0, false)
+	case key == gocui.KeyCtrlA:
+		// beginning of line
+		v.MoveCursor(-x, 0, false)
+	default:
+		// If we didn't handle key above, pass through to base editor.
+		gocui.DefaultEditor.Edit(v, key, ch, mod)
+	}
+}
+
+func (le *LineEditor) Edit(v *gocui.View, key gocui.Key, ch rune, mod gocui.Modifier) {
+	onDone := func() {
+		le.onFinish(v.BufferLines())
+		vd.gui.Cursor = false
+		vd.gui.DeleteView("dialog")
+		vd.gui.SetCurrentView("main")
+	}
+
+	switch {
+	case key == gocui.KeyEnter && !le.multiline:
+		onDone()
+	case key == gocui.KeyEnter && le.multiline:
+		lines := v.BufferLines()
+		if strings.Trim(lines[len(lines)-1], whitespace) == "" {
+			onDone()
+			return
+		}
+		fallthrough
+	default:
+		fullerEditor(v, key, ch, mod)
 	}
 }
 
@@ -279,6 +333,10 @@ func (ds *dataStore) currentList() *node {
 	return n
 }
 
+func (ds *dataStore) currentItems() *[]int {
+	return &ds.currentList().sublist
+}
+
 func (ds *dataStore) currentItemIndex() int {
 	if ds.idCurrentItem < 0 {
 		// Error.
@@ -308,8 +366,12 @@ func (ds *dataStore) appendItem(s string) {
 	}
 	ds.nodes[ds.freeID] = &n
 	ds.freeID += 1
-	kids := &ds.currentList().sublist
-	*kids = append(*kids, n.id)
+	kids := ds.currentItems()
+	i := ds.currentItemIndex()
+	// Sigh, Go has gross item insertion.
+	*kids = append(*kids, -1)
+	copy((*kids)[i+2:], (*kids)[i+1:])
+	(*kids)[i+1] = n.id
 
 	// Make the latest node the current one.
 	ds.idCurrentItem = n.id
@@ -331,6 +393,8 @@ func (ds *dataStore) replaceItem(s string) {
 	}
 
 	n.label = s
+
+	ds.dirty = true
 }
 
 func (ds *dataStore) deleteItem() {
@@ -339,14 +403,23 @@ func (ds *dataStore) deleteItem() {
 		return
 	}
 
+	if len(ds.nodes[ds.idCurrentItem].sublist) > 0 {
+		// TODO: delete all child nodes too
+		fmt.Fprintf(vd.paneMessage, "Deletion of non-leaf nodes not supported yet.\n")
+		return
+	}
+
 	kids := &ds.currentList().sublist
 	i := ds.currentItemIndex()
+
 	*kids = append((*kids)[:i], (*kids)[i+1:]...)
 	delete(ds.nodes, ds.idCurrentItem)
 
 	// Make sure index is still valid
 	i = min(i, len(*kids)-1)
 	ds.idCurrentItem = (*kids)[i]
+
+	ds.dirty = true
 }
 
 func (ds *dataStore) moveItemToIndex(idxNew int) {
@@ -395,6 +468,15 @@ func (ds *dataStore) prevItem() {
 			return
 		}
 	}
+}
+
+func (ds *dataStore) firstItem() {
+	ds.idCurrentItem = (*ds.currentItems())[0]
+}
+
+func (ds *dataStore) lastItem() {
+	l := ds.currentItems()
+	ds.idCurrentItem = (*l)[len(*l)-1]
 }
 
 func (ds *dataStore) focusDescend() {
@@ -549,6 +631,32 @@ func (ds *dataStore) load() {
 ////////////////////////////////////////
 // User Interface functions
 
+func dialog(g *gocui.Gui, title, prefill string) *LineEditor {
+	const w = 40
+	const h = 3
+	maxX, maxY := g.Size()
+	if v, err := g.SetView("dialog", maxX/2-w/2, maxY/2-h/2, maxX/2+w/2, maxY/2+h/2); err != nil {
+		if err != gocui.ErrUnknownView {
+			return nil
+		}
+		v.Frame = true
+		v.Editable = true
+		le := LineEditor{}
+		v.Editor = &le
+		v.Title = title
+		fmt.Fprintf(v, prefill)
+		// TODO: what if prefill is multiline?
+		v.SetCursor(len(prefill), 0)
+		vd.paneDialog = v
+		g.Cursor = true
+		if _, err := g.SetCurrentView("dialog"); err != nil {
+			panic(err)
+		}
+		return &le
+	}
+	return nil
+}
+
 func layout(g *gocui.Gui) error {
 	maxX, maxY := g.Size()
 	if v, err := g.SetView("main", 0, 0, min(80, maxX-2), maxY-3-1); err != nil {
@@ -559,6 +667,7 @@ func layout(g *gocui.Gui) error {
 		v.Editable = true
 		vd.paneMain = v
 		updateMainPane()
+		g.SetCurrentView("main")
 	}
 	if v, err := g.SetView("message", -1, maxY-3, maxX+1, maxY+1); err != nil {
 		if err != gocui.ErrUnknownView {
@@ -571,18 +680,6 @@ func layout(g *gocui.Gui) error {
 
 		fmt.Fprintln(v, "Welcome.")
 	}
-	/*
-		const w = 40
-		const h = 3
-		if v, err := g.SetView("dialog", maxX/2-w/2, maxY/2-h/2, maxX/2+w/2, maxY/2+h/2); err != nil {
-			if err != gocui.ErrUnknownView {
-				return err
-			}
-			v.Frame = true
-			vd.paneDialog = v
-		}
-	*/
-	g.SetCurrentView("main")
 	return nil
 }
 
@@ -605,24 +702,6 @@ func updateMainPane() {
 		}
 		fmt.Fprintln(vd.paneMain, pfx+ds.nodes[item].label+sfx)
 	}
-}
-
-func readKey() byte {
-	// Source: https://stackoverflow.com/questions/15159118/read-a-character-from-standard-input-in-go-without-pressing-enter
-
-	// NOTE: original had "-F", but on OSX it seems to be "-f".
-
-	// disable input buffering
-	exec.Command("/bin/stty", "-f", "/dev/tty", "cbreak", "min", "1").Run()
-	// do not display entered characters on the screen
-	exec.Command("/bin/stty", "-f", "/dev/tty", "-echo").Run()
-
-	defer exec.Command("/bin/stty", "-f", "/dev/tty", "echo").Run()
-
-	var b []byte = make([]byte, 1)
-	os.Stdin.Read(b)
-
-	return b[0]
 }
 
 func readString() string {
@@ -648,64 +727,70 @@ func min(a, b int) int {
 ////////////////////////////////////////
 // COMMANDS
 
-func cmdAddItems() error {
-	for {
-		fmt.Print("Enter item: ")
-		text := strings.TrimRight(readString(), whitespace)
-		if text == "" {
-			break
+func cmdAddItems() {
+	dlgEditor := dialog(vd.gui, "Add", "")
+	dlgEditor.multiline = true
+	dlgEditor.onFinish = func(ss []string) {
+		for _, s := range ss {
+			text := strings.TrimRight(s, whitespace)
+			if len(text) > 0 {
+				ds.appendItem(text)
+			}
 		}
-		ds.appendItem(text)
+		updateMainPane()
 	}
-	updateMainPane()
-	return nil
 }
 
-func cmdDeleteItem() error {
+func cmdReplaceItem() {
+	dlgEditor := dialog(vd.gui, "Replace", ds.nodes[ds.idCurrentItem].label)
+	dlgEditor.multiline = false
+	dlgEditor.onFinish = func(ss []string) {
+		ds.replaceItem(ss[0])
+		updateMainPane()
+	}
+}
+
+func cmdDeleteItem() {
 	ds.deleteItem()
 	updateMainPane()
-	return nil
 }
 
-func cmdNextItem() error {
+func cmdNextItem() {
 	ds.nextItem()
 	updateMainPane()
-	return nil
 }
 
-func cmdPrevItem() error {
+func cmdPrevItem() {
 	ds.prevItem()
 	updateMainPane()
-	return nil
 }
 
-func cmdDescend() error {
+func cmdFirstItem() {
+	ds.firstItem()
+	updateMainPane()
+}
+
+func cmdLastItem() {
+	ds.lastItem()
+	updateMainPane()
+}
+
+func cmdDescend() {
 	ds.focusDescend()
 	updateMainPane()
-	return nil
 }
 
-func cmdAscend() error {
+func cmdAscend() {
 	ds.focusAscend()
 	updateMainPane()
-	return nil
 }
 
-func cmdReplaceItem() error {
-	fmt.Printf("Replace with: ")
-	ds.replaceItem(readString())
-	updateMainPane()
-	return nil
-}
-
-func cmdSaveData() error {
+func cmdSaveData() {
 	ds.save()
-	return nil
 }
 
-func cmdLoadData() error {
+func cmdLoadData() {
 	ds.load()
-	return nil
 }
 
 ////////////////////////////////////////
@@ -732,6 +817,10 @@ func keybindings(g *gocui.Gui, ds *dataStore) error {
 	if err := g.SetKeybinding("", gocui.KeyCtrlQ, gocui.ModNone, quit); err != nil {
 		log.Panicln(err)
 	}
+	// TODO: set up focus appropriately from start
+	if err := g.SetKeybinding("", gocui.KeyTab, gocui.ModNone, setmain); err != nil {
+		log.Panicln(err)
+	}
 
 	if err := g.SetKeybinding("", gocui.KeyCtrlL, gocui.ModNone,
 		func(g *gocui.Gui, v *gocui.View) error {
@@ -745,6 +834,11 @@ func keybindings(g *gocui.Gui, ds *dataStore) error {
 
 func quit(g *gocui.Gui, v *gocui.View) error {
 	return gocui.ErrQuit
+}
+
+func setmain(g *gocui.Gui, v *gocui.View) error {
+	g.SetCurrentView("main")
+	return nil
 }
 
 func main() {
@@ -762,6 +856,7 @@ func main() {
 		log.Panicln(err)
 	}
 	defer g.Close()
+	vd.gui = g
 
 	g.SetManagerFunc(layout)
 
