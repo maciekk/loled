@@ -1,7 +1,12 @@
 // List of List (LOL) EDitor
 //
 // TODO
-// - provide Ungroup
+// - visual revamp
+//   - better method for printing color strings, w/o ANSII escapes
+//   - make layout more pleasing to eye
+// - fix gocui off-by-one bug w/256 color setting in SelFgCol and SelBgCol
+// - provide high level overview of major classes and their relationships in
+//   top-of-file comment here (above TODO section)
 // - show log in side window
 // - delete should delete all tagged items in current list if any are tagged,
 //   and only otherwise the current item
@@ -18,6 +23,7 @@
 //   http://1.bp.blogspot.com/_xmWIUzqxRic/TMmpH4J0iKI/AAAAAAAAABY/CLvy4P5AowA/s200/happy-face-770659.png
 // - alas, would require width ~50 for good recognition, which might be too large
 // - long term would love undo functionality
+// - need indicator ("*") when dirty=true, data needs a save.
 //
 // NOTES
 // - See https://appliedgo.net/tui/ for review of potential TUIs to use.
@@ -51,11 +57,16 @@ var cmdPrompt = "$ "
 var whitespace = " 	\n\r"
 
 var pfxItem = "- " // used in both, disk & screen
-var pfxFocusedItem = ">> "
+var pfxFocusedItem = ">>"
+var sfxMore = " ▼"
 
 func Warning(s string) {
 	fmt.Println("WARNING: " + s)
 }
+
+const (
+	PANE_MAIN_MAX_WIDTH = 60
+)
 
 const (
 	FG_BLACK = 30 + iota
@@ -172,35 +183,41 @@ func (le *LolEditor) Edit(v *gocui.View, key gocui.Key, ch rune, mod gocui.Modif
 func (le *LolEditor) MoveMode(v *gocui.View, key gocui.Key, ch rune, mod gocui.Modifier) {
 	idx := ds.currentItemIndex()
 	max_idx := len(ds.currentList().sublist) - 1
+	new_idx := -1
 
 	switch {
 	case ch == 'q' || key == gocui.KeyEnter:
-		fmt.Fprintln(vd.paneMessage, "Switched to MOVE mode.")
+		fmt.Fprintln(vd.paneMessage, "Switched to NORMAL mode.")
 		le.modeMove = false
 	case ch == 'k':
 		if idx > 0 {
-			ds.moveItemToIndex(idx - 1)
+			new_idx = idx - 1
 		}
 	case ch == 'K' || ch == '0':
 		if idx > 0 {
-			ds.moveItemToIndex(0)
+			new_idx = 0
 		}
 	case ch == 'j':
 		if idx < max_idx {
-			ds.moveItemToIndex(idx + 1)
+			new_idx = idx + 1
 		}
 	case ch == 'J' || ch == 'e' || ch == '-':
 		if idx < max_idx {
-			ds.moveItemToIndex(max_idx)
+			new_idx = max_idx
 		}
 	}
-	updateMainPane()
+	if new_idx >= 0 {
+		ds.moveItemToIndex(new_idx)
+		updateMainPane()
+		// Update the cursor as well.
+		ds.setCurrentItemIndex(new_idx)
+	}
 }
 
 func (le *LolEditor) NormalMode(v *gocui.View, key gocui.Key, ch rune, mod gocui.Modifier) {
 	switch {
 	case ch == 'm':
-		fmt.Fprintln(vd.paneMessage, "Switched to NORMAL mode.")
+		fmt.Fprintln(vd.paneMessage, "Switched to MOVE mode.")
 		le.modeMove = true
 		// TODO: use actually some of these MoveCursor commands on top of
 		// current manipulation of currentItem.
@@ -352,8 +369,47 @@ func (ds *dataStore) currentItem() *node {
 	return n
 }
 
+// Sets current item and updates the UI selection bar to it.
+func (ds *dataStore) setCurrentItemIndex(idx int) {
+	if idx < 0 {
+		// no selected item
+		ds.idCurrentItem = -1
+		if vd.paneMain != nil {
+			vd.paneMain.Highlight = false
+		}
+		return
+	}
+	items := ds.currentItems()
+	if idx > len(*items)-1 {
+		panic(fmt.Sprintf(
+			"Bad index for setCurrentItemIndex(): %v (len = %v)\n",
+			idx, len(*items)))
+		if vd.paneMain != nil {
+			vd.paneMain.Highlight = false
+		}
+		return
+	}
+
+	ds.idCurrentItem = (*ds.currentItems())[idx]
+	if vd.paneMain != nil {
+		// +2 offset due to list title and underline.
+		vd.paneMain.SetCursor(0, idx+2)
+		vd.paneMain.Highlight = true
+	}
+}
+
 func (ds *dataStore) currentItems() *[]int {
 	return &ds.currentList().sublist
+}
+
+func (ds *dataStore) indexOfItem(id int) int {
+	for i, k := range ds.currentList().sublist {
+		if k == id {
+			return i
+		}
+	}
+	// Didn't find it.
+	return -1
 }
 
 func (ds *dataStore) currentItemIndex() int {
@@ -399,7 +455,7 @@ func (ds *dataStore) appendItem(s string) {
 	insertKid(n.id, kids, i+1)
 
 	// Make the latest node the current one.
-	ds.idCurrentItem = n.id
+	ds.setCurrentItemIndex(i + 1)
 
 	ds.dirty = true
 }
@@ -442,7 +498,7 @@ func (ds *dataStore) deleteItem() {
 
 	// Make sure index is still valid
 	i = min(i, len(*kids)-1)
-	ds.idCurrentItem = (*kids)[i]
+	ds.setCurrentItemIndex(i)
 
 	ds.dirty = true
 }
@@ -471,7 +527,7 @@ func (ds *dataStore) toggleAllItems() {
 
 func (ds *dataStore) ungroupItems() {
 	if ds.idCurrentItem < 0 || len(ds.currentItem().sublist) < 1 {
-		fmt.Fprintf(vd.paneMessage, "Current item invalid, or has no sublist.")
+		fmt.Fprintf(vd.paneMessage, "Cannot ungroup, item invalid or has no sublist.")
 		return
 	}
 
@@ -490,7 +546,7 @@ func (ds *dataStore) ungroupItems() {
 	}
 
 	// Update current item.
-	ds.idCurrentItem = subkids[0]
+	ds.setCurrentItemIndex(i)
 
 	ds.dirty = true
 }
@@ -569,7 +625,7 @@ func (ds *dataStore) nextItem() {
 	for i, id := range list {
 		if id == ds.idCurrentItem {
 			if i < len(list)-1 {
-				ds.idCurrentItem = list[i+1]
+				ds.setCurrentItemIndex(i + 1)
 			}
 			return
 		}
@@ -581,7 +637,7 @@ func (ds *dataStore) prevItem() {
 	for i, id := range list {
 		if id == ds.idCurrentItem {
 			if i > 0 {
-				ds.idCurrentItem = list[i-1]
+				ds.setCurrentItemIndex(i - 1)
 			}
 			return
 		}
@@ -589,23 +645,25 @@ func (ds *dataStore) prevItem() {
 }
 
 func (ds *dataStore) firstItem() {
-	ds.idCurrentItem = (*ds.currentItems())[0]
+	ds.setCurrentItemIndex(0)
 }
 
 func (ds *dataStore) lastItem() {
 	l := ds.currentItems()
-	ds.idCurrentItem = (*l)[len(*l)-1]
+	ds.setCurrentItemIndex(len(*l) - 1)
 }
 
 func (ds *dataStore) focusDescend() {
 	if ds.idCurrentItem >= 0 {
 		ds.idCurrentList = ds.idCurrentItem
 		if len(ds.currentList().sublist) > 0 {
-			ds.idCurrentItem = ds.currentList().sublist[0]
+			ds.setCurrentItemIndex(0)
 		} else {
 			// < 0 means no item selected
-			ds.idCurrentItem = -1
+			ds.setCurrentItemIndex(-1)
 		}
+		// TODO: push this off to cmd*()
+		//vd.paneMain.Title = ds.currentList().label
 	}
 	// Else do nothing; < 0 implies ds.idCurrentList does not have items.
 }
@@ -615,7 +673,12 @@ func (ds *dataStore) focusAscend() {
 		// Nothing to do if already at a root.
 		return
 	}
-	ds.idCurrentList, ds.idCurrentItem = ds.currentList().parent, ds.idCurrentList
+	newCurrentItem := ds.idCurrentList
+	ds.idCurrentList = ds.currentList().parent
+	ds.setCurrentItemIndex(ds.indexOfItem(newCurrentItem))
+
+	// TODO: push this off to cmd*()
+	//vd.paneMain.Title = ds.currentList().label
 }
 
 func (ds *dataStore) save() {
@@ -738,9 +801,9 @@ func (ds *dataStore) load() {
 	ds.nodes[0].parent = -1
 
 	ds.idCurrentList = 0
-	ds.idCurrentItem = -1
+	ds.setCurrentItemIndex(-1)
 	if len(ds.nodes[ds.idCurrentList].sublist) > 0 {
-		ds.idCurrentItem = ds.nodes[ds.idCurrentList].sublist[0]
+		ds.setCurrentItemIndex(0)
 	}
 
 	ds.dirty = false
@@ -778,15 +841,27 @@ func dialog(g *gocui.Gui, title, prefill string) *LineEditor {
 
 func layout(g *gocui.Gui) error {
 	maxX, maxY := g.Size()
-	if v, err := g.SetView("main", 0, 0, min(80, maxX-2), maxY-3-1); err != nil {
+	if v, err := g.SetView("main", 0, 0, min(PANE_MAIN_MAX_WIDTH, maxX-2), maxY-3-1); err != nil {
 		if err != gocui.ErrUnknownView {
 			return err
 		}
 		v.Editor = &LolEditor{}
 		v.Editable = true
+		v.Highlight = false // to be toggled on once list has items
+		// To pick colors from 256, see:
+		//   https://en.wikipedia.org/wiki/ANSI_escape_code#8-bit
+		// NOTE: gocui has off by 1 error; pick color from above, then
+		// add 1.
+		v.BgColor = 237 + 1
+		v.FgColor = 7 + 1
+		v.SelBgColor = 32 + 1
+		v.SelFgColor = 231 + 1 | gocui.AttrBold
 		vd.paneMain = v
 		updateMainPane()
 		g.SetCurrentView("main")
+		if len(*ds.currentItems()) > 0 {
+			ds.setCurrentItemIndex(0)
+		}
 	}
 	if v, err := g.SetView("message", -1, maxY-3, maxX+1, maxY+1); err != nil {
 		if err != gocui.ErrUnknownView {
@@ -807,9 +882,10 @@ func updateMainPane() {
 
 	n := ds.currentList()
 
-	title := fmt.Sprintf("[[ %v ]]", n.label)
-	fmt.Fprintln(vd.paneMain, colorString(title, BG_BLACK, FG_WHITE, ";1"))
-	fmt.Fprintln(vd.paneMain, strings.Repeat("=", len(title)))
+	title := fmt.Sprintf("▶ %v", n.label) // TODO: add more info
+	fmt.Fprintln(vd.paneMain, title)
+	//fmt.Fprintln(vd.paneMain, colorString(title, BG_BLACK, FG_WHITE, ";1"))
+	fmt.Fprintln(vd.paneMain, strings.Repeat("─", len(title)))
 	for _, item := range n.sublist {
 		ni := ds.nodes[item]
 		pfx := pfxItem
@@ -818,7 +894,7 @@ func updateMainPane() {
 		}
 		sfx := ""
 		if len(ds.nodes[item].sublist) > 0 {
-			sfx = " ..."
+			sfx = sfxMore
 		}
 		line := pfx + ds.nodes[item].label + sfx
 		if ni.tagged {
@@ -993,6 +1069,7 @@ func setmain(g *gocui.Gui, v *gocui.View) error {
 func main() {
 	flag.Parse()
 
+	// Set up data.
 	if _, err := os.Stat(*filename); err == nil {
 		ds.load()
 	} else {
@@ -1000,12 +1077,17 @@ func main() {
 		ds.init()
 	}
 
-	g, err := gocui.NewGui(gocui.OutputNormal)
+	// Set up GUI.
+	g, err := gocui.NewGui(gocui.Output256)
 	if err != nil {
 		log.Panicln(err)
 	}
 	defer g.Close()
 	vd.gui = g
+
+	// Does this do anything?
+	g.SelBgColor = 237 + 1
+	g.SelFgColor = 7 + 1
 
 	g.SetManagerFunc(layout)
 
@@ -1013,6 +1095,7 @@ func main() {
 		log.Panicln(err)
 	}
 
+	// Main interaction loop.
 	if err := g.MainLoop(); err != nil && err != gocui.ErrQuit {
 		log.Panicln(err)
 	}
