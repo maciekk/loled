@@ -1,14 +1,14 @@
 // List of List (LOL) EDitor
 //
 // TODO
-// - rather than log, create custom/own func that prints to Message pane.
+// - new func: establish a "target" list, and then with special key move items
+//   to that target spot, starting wherever in the datastore tree
 // - visual revamp
 //   - better method for printing color strings, w/o ANSII escapes
 // - fix gocui off-by-one bug w/256 color setting in SelFgCol and SelBgCol
 //   (possibly bug in termbox-go underneath gocui)
 // - provide high level overview of major classes and their relationships in
 //   top-of-file comment here (above TODO section)
-// - show log in side window
 // - delete should delete all tagged items in current list if any are tagged,
 //   and only otherwise the current item
 // - set up proper Vim folding in this file
@@ -25,6 +25,7 @@
 // - alas, would require width ~50 for good recognition, which might be too large
 // - long term would love undo functionality
 // - need indicator ("*") when dirty=true, data needs a save.
+// - RPG-like reward system for tasks complete
 //
 // NOTES
 // - See https://appliedgo.net/tui/ for review of potential TUIs to use.
