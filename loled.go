@@ -38,7 +38,6 @@ import (
 	"flag"
 	"fmt"
 	"io/ioutil"
-	"log"
 	"os"
 	"os/exec"
 	"sort"
@@ -66,14 +65,10 @@ const logo = `
 |_____\___/|_____|_____\__,_|   \_/  \___(_)___/
 `
 
-var pfxItem = "- " // used in both, disk & screen
+var pfxItem = "- "
 var pfxFocusedItem = ">>"
 var pfxFocusedMovingItem = "▲▼"
 var sfxMore = " ▼"
-
-func Warning(s string) {
-	fmt.Println("WARNING: " + s)
-}
 
 const (
 	PANE_MAIN_MAX_WIDTH = 60
@@ -201,7 +196,7 @@ func (le *LolEditor) MoveMode(v *gocui.View, key gocui.Key, ch rune, mod gocui.M
 
 	switch {
 	case ch == 'q' || key == gocui.KeyEnter:
-		fmt.Fprintln(vd.paneMessage, "Switched to NORMAL mode.")
+		Log("Switched to NORMAL mode.")
 		le.modeMove = false
 		updateMainPane()
 	case ch == 'k':
@@ -232,7 +227,7 @@ func (le *LolEditor) MoveMode(v *gocui.View, key gocui.Key, ch rune, mod gocui.M
 func (le *LolEditor) NormalMode(v *gocui.View, key gocui.Key, ch rune, mod gocui.Modifier) {
 	switch {
 	case ch == 'm':
-		fmt.Fprintln(vd.paneMessage, "Switched to MOVE mode.")
+		Log("Switched to MOVE mode.")
 		le.modeMove = true
 		updateMainPane()
 	case ch == 'j':
@@ -342,6 +337,10 @@ func (le *LineEditor) Edit(v *gocui.View, key gocui.Key, ch rune, mod gocui.Modi
 var ds dataStore
 var vd viewData
 
+func Log(s string, a ...interface{}) {
+	fmt.Fprintf(vd.paneMessage, s+"\n", a...)
+}
+
 ////////////////////////////////////////
 // methods
 func (ds *dataStore) init() {
@@ -416,6 +415,15 @@ func (ds *dataStore) currentItems() *[]int {
 }
 
 func (ds *dataStore) indexOfItem(id int) int {
+	l := ds.currentList()
+	if l == nil {
+		Log("indexOfItem(%v) called but no current list.", id)
+		return -1
+	}
+	if l.sublist == nil {
+		Log("indexOfItem(%v) called but current list has no sublist.", id)
+		return -1
+	}
 	for i, k := range ds.currentList().sublist {
 		if k == id {
 			return i
@@ -499,7 +507,7 @@ func (ds *dataStore) deleteItem() {
 
 	if len(ds.nodes[ds.idCurrentItem].sublist) > 0 {
 		// TODO: delete all child nodes too
-		fmt.Fprintf(vd.paneMessage, "Deletion of non-leaf nodes not supported yet.\n")
+		Log("Deletion of non-leaf nodes not supported yet.")
 		return
 	}
 
@@ -540,7 +548,7 @@ func (ds *dataStore) toggleAllItems() {
 
 func (ds *dataStore) ungroupItems() {
 	if ds.idCurrentItem < 0 || len(ds.currentItem().sublist) < 1 {
-		fmt.Fprintf(vd.paneMessage, "Cannot ungroup, item invalid or has no sublist.")
+		Log("Cannot ungroup, item invalid or has no sublist.")
 		return
 	}
 
@@ -729,7 +737,7 @@ func (ds *dataStore) save() {
 	}
 
 	ds.dirty = false
-	fmt.Fprintf(vd.paneMessage, "Saved to %q.\n", *filename)
+	Log("Saved to %q.", *filename)
 }
 
 func (ds *dataStore) load() {
@@ -1059,14 +1067,14 @@ func pushBack(l *[]string, s string) {
 func keybindings(g *gocui.Gui, ds *dataStore) error {
 	// backup keybinding to quit
 	if err := g.SetKeybinding("", gocui.KeyCtrlC, gocui.ModNone, quit); err != nil {
-		log.Panicln(err)
+		Log(err.Error())
 	}
 	if err := g.SetKeybinding("", gocui.KeyCtrlQ, gocui.ModNone, quit); err != nil {
-		log.Panicln(err)
+		Log(err.Error())
 	}
 	// TODO: set up focus appropriately from start
 	if err := g.SetKeybinding("", gocui.KeyTab, gocui.ModNone, setmain); err != nil {
-		log.Panicln(err)
+		Log(err.Error())
 	}
 
 	if err := g.SetKeybinding("", gocui.KeyCtrlL, gocui.ModNone,
@@ -1102,7 +1110,7 @@ func main() {
 	// Set up GUI.
 	g, err := gocui.NewGui(gocui.Output256)
 	if err != nil {
-		log.Panicln(err)
+		Log(err.Error())
 	}
 	defer g.Close()
 	vd.gui = g
@@ -1114,12 +1122,12 @@ func main() {
 	g.SetManagerFunc(layout)
 
 	if err := keybindings(g, &ds); err != nil {
-		log.Panicln(err)
+		Log(err.Error())
 	}
 
 	// Main interaction loop.
 	if err := g.MainLoop(); err != nil && err != gocui.ErrQuit {
-		log.Panicln(err)
+		Log(err.Error())
 	}
 
 	fmt.Printf("Quitting... ")
