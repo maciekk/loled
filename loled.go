@@ -323,10 +323,22 @@ func (le *LineEditor) Edit(v *gocui.View, key gocui.Key, ch rune, mod gocui.Modi
 		onDone()
 	case key == gocui.KeyEnter && le.multiline:
 		lines := v.BufferLines()
+		if len(lines) < 1 {
+			// User hit Enter, without any text entered; nothing to
+			// do.
+			onDone()
+			return
+		}
+
+		// If last line is blank, then that is the signal that we are
+		// don with the multi-line entry.
 		if strings.Trim(lines[len(lines)-1], whitespace) == "" {
 			onDone()
 			return
 		}
+		// Else the Enter was simply advancing to next line, and we
+		// continue to edit (let the fullEditor process the Enter as
+		// usual).
 		fallthrough
 	default:
 		fullerEditor(v, key, ch, mod)
