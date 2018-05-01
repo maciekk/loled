@@ -2,7 +2,6 @@
 //
 // TODO
 // - need better binding for "end of list"
-// - length of list title underline is incorrect?
 // - load() should probably reset current List and item to root, first item
 // - it should also probably reset Target (some other ops probably as well)
 // - clean up finally the singletons (vd & ds), and distribute methods better!
@@ -1029,7 +1028,9 @@ func updateMainPane() {
 	title := fmt.Sprintf("▶ %v", n.label) // TODO: add more info
 	fmt.Fprintln(vd.paneMain, title)
 	//fmt.Fprintln(vd.paneMain, colorString(title, BG_BLACK, FG_WHITE, ";1"))
-	fmt.Fprintln(vd.paneMain, strings.Repeat("─", len(title)))
+	// NOTE: len() needs to count runes, not bytes (because of Unicode
+	// multibyte runes).
+	fmt.Fprintln(vd.paneMain, strings.Repeat("─", len([]rune(title))))
 	for _, item := range n.sublist {
 		ni := ds.nodes[item]
 		pfx := pfxItem
