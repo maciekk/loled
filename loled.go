@@ -1,6 +1,9 @@
 // List of List (LOL) EDitor
 //
 // TODO
+// - add Ctrl-W binding in text edit to delete last word
+// - rather than printing "root", the root node should be labeled with
+//   filename being edited.
 // - load() should probably reset current List and item to root, first item
 // - it should also probably reset Target (some other ops probably as well)
 // - clean up finally the singletons (vd & ds), and distribute methods better!
