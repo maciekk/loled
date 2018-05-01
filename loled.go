@@ -38,6 +38,7 @@ import (
 	"bufio"
 	"flag"
 	"fmt"
+	"io"
 	"io/ioutil"
 	"os"
 	"os/exec"
@@ -351,7 +352,13 @@ var ds dataStore
 var vd viewData
 
 func Log(s string, a ...interface{}) {
-	fmt.Fprintf(vd.paneMessage, s+"\n", a...)
+	var f io.Writer
+	if vd.paneMessage != nil {
+		f = vd.paneMessage
+	} else {
+		f = os.Stdout
+	}
+	fmt.Fprintf(f, s+"\n", a...)
 }
 
 ////////////////////////////////////////
@@ -841,7 +848,7 @@ func (ds *dataStore) load() {
 	}
 
 	ds.dirty = false
-	fmt.Printf("Loaded %q.\n", *filename)
+	Log("Loaded %q.", *filename)
 }
 
 ////////////////////////////////////////
