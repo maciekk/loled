@@ -1,8 +1,26 @@
 // List of List (LOL) EDitor
 //
 // TODO
+// - need better binding for "end of list"
+// - length of list title underline is incorrect?
+// - load() should probably reset current List and item to root, first item
+// - it should also probably reset Target (some other ops probably as well)
+// - clean up finally the singletons (vd & ds), and distribute methods better!
+// - now that can hop with random-access, need "go back" command
+// - maybe we should have ability to memorize and jump to a memorized location
+//   (e.g., Vim's 'm' and apostrophe normal mode commands)
 // - new func: establish a "target" list, and then with special key move items
 //   to that target spot, starting wherever in the datastore tree
+//	- in fact, target location should be displayed in second pane, on
+//	right, much like most dual-pane file managers.
+//	- although, I would like a special keybinding to mark items "done",
+//	which would have an implicit/automatic target in some "Done" sublist,
+//	but one that is in background, not displayed
+//	- this suggests Target and 2nd window should be orthogonal features
+//	- Target then needs 3 functions / key bindings;
+//	  1. set target location (items will be added AFTER selected item)
+//	  2. move current item to Target
+//	  3. go to Target
 // - visual revamp
 //   - better method for printing color strings, w/o ANSII escapes
 // - fix gocui off-by-one bug w/256 color setting in SelFgCol and SelBgCol
@@ -174,6 +192,10 @@ type viewData struct {
 
 	// primary editor
 	editorLol *LolEditor
+
+	// Target info
+	idTargetList  int
+	idTargetIndex int
 }
 
 type LolEditor struct {
@@ -254,7 +276,7 @@ func (le *LolEditor) NormalMode(v *gocui.View, key gocui.Key, ch rune, mod gocui
 		cmdSaveData()
 	case ch == 'L':
 		cmdLoadData()
-	case ch == 't' || key == gocui.KeySpace:
+	case key == gocui.KeySpace:
 		cmdToggleItem()
 	case key == gocui.KeyCtrlT:
 		// Can't use gocuy.KeyCtrlSpace as it == 0 / matches most
@@ -264,6 +286,12 @@ func (le *LolEditor) NormalMode(v *gocui.View, key gocui.Key, ch rune, mod gocui
 		cmdGroupItems()
 	case ch == 'G':
 		cmdUngroupItems()
+	case ch == 't':
+		cmdSetTarget()
+	case ch == 'M':
+		cmdMoveToTarget()
+	case ch == 'T':
+		cmdGoToTarget()
 		/*
 			case ch == 'q':
 				quit()
@@ -564,6 +592,76 @@ func (ds *dataStore) toggleAllItems() {
 		ds.nodes[id].tagged = newval
 	}
 
+}
+
+func (ds *dataStore) SetTarget() {
+	vd.idTargetList = ds.idCurrentList
+	vd.idTargetIndex = ds.currentItemIndex()
+	Log("Target set.")
+}
+
+func (ds *dataStore) GoToTarget() {
+	// TODO: how does this behave when both Target vars are zero? (i.e.,
+	// at startup) ID==0 happens to amount to the root list (good), but
+	// current item is the root list as well... should trigger "item not
+	// in list" warning.
+	ds.idCurrentList = vd.idTargetList
+	// Check if Target is on a list with no items.
+	if vd.idTargetIndex == -1 {
+		ds.idCurrentItem = -1
+	} else {
+		ds.idCurrentItem = (*ds.currentItems())[vd.idTargetIndex]
+	}
+	ds.setCurrentItemIndex(vd.idTargetIndex)
+	Log("Jumped to Target.")
+}
+
+func (ds *dataStore) MoveToTarget() {
+	// Check that there is anything to do.
+	if ds.idCurrentItem < 0 || ds.idCurrentList < 0 {
+		Log("No current list or item.")
+		return
+	}
+
+	// First, remove item from current list.
+	kids := &ds.currentList().sublist
+	i := ds.currentItemIndex()
+	*kids = append((*kids)[:i], (*kids)[i+1:]...)
+
+	// Find successor, if any.
+	var idNewCurrentItem int
+	if i >= len(*kids) {
+		i = len(*kids) - 1
+	}
+	if i < 0 {
+		// No more items left on list.
+		idNewCurrentItem = -1
+	} else {
+		idNewCurrentItem = (*kids)[i]
+	}
+
+	// Now place it at Target.
+	kids = &ds.nodes[vd.idTargetList].sublist
+	if len(*kids) == 0 {
+		*kids = []int{ds.idCurrentItem}
+	} else {
+		*kids = append(*kids, -1) // extend length by 1
+		i = vd.idTargetIndex + 1  // insertion desired AFTER target
+		// There is a second part to shift only if item to insert is
+		// not meant as last item.
+		if i < len(*kids)-1 {
+			copy((*kids)[i+1:], (*kids)[i:])
+		}
+		(*kids)[i] = ds.idCurrentItem
+	}
+
+	// Next, advance target location offset, so that next item is added
+	// AFTER the one we just added (so that sequence of items added
+	// remains in the correct order).
+	vd.idTargetIndex += 1
+
+	// Finally make sure current item is its former successor.
+	ds.idCurrentItem = idNewCurrentItem
 }
 
 func (ds *dataStore) ungroupItems() {
@@ -1066,6 +1164,21 @@ func cmdSaveData() {
 
 func cmdLoadData() {
 	ds.load()
+}
+
+func cmdSetTarget() {
+	ds.SetTarget()
+	// No need to update pane.
+}
+
+func cmdMoveToTarget() {
+	ds.MoveToTarget()
+	updateMainPane()
+}
+
+func cmdGoToTarget() {
+	ds.GoToTarget()
+	updateMainPane()
 }
 
 ////////////////////////////////////////
