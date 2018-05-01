@@ -1,25 +1,12 @@
 // List of List (LOL) EDitor
 //
 // TODO
-// - need better binding for "end of list"
 // - load() should probably reset current List and item to root, first item
 // - it should also probably reset Target (some other ops probably as well)
 // - clean up finally the singletons (vd & ds), and distribute methods better!
 // - now that can hop with random-access, need "go back" command
 // - maybe we should have ability to memorize and jump to a memorized location
 //   (e.g., Vim's 'm' and apostrophe normal mode commands)
-// - new func: establish a "target" list, and then with special key move items
-//   to that target spot, starting wherever in the datastore tree
-//	- in fact, target location should be displayed in second pane, on
-//	right, much like most dual-pane file managers.
-//	- although, I would like a special keybinding to mark items "done",
-//	which would have an implicit/automatic target in some "Done" sublist,
-//	but one that is in background, not displayed
-//	- this suggests Target and 2nd window should be orthogonal features
-//	- Target then needs 3 functions / key bindings;
-//	  1. set target location (items will be added AFTER selected item)
-//	  2. move current item to Target
-//	  3. go to Target
 // - visual revamp
 //   - better method for printing color strings, w/o ANSII escapes
 // - fix gocui off-by-one bug w/256 color setting in SelFgCol and SelBgCol
@@ -257,7 +244,7 @@ func (le *LolEditor) NormalMode(v *gocui.View, key gocui.Key, ch rune, mod gocui
 		cmdNextItem()
 	case ch == 'k':
 		cmdPrevItem()
-	case ch == 'J' || ch == '$':
+	case ch == 'J' || ch == '$' || ch == '-':
 		cmdLastItem()
 	case ch == 'K' || ch == '0':
 		cmdFirstItem()
