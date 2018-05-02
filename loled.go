@@ -251,7 +251,7 @@ func (le *LolEditor) NormalMode(v *gocui.View, key gocui.Key, ch rune, mod gocui
 		cmdLastItem()
 	case ch == 'K' || ch == '0':
 		cmdFirstItem()
-	case ch == 'a':
+	case ch == 'a' || ch == 'o':
 		cmdAddItems()
 	case ch == 'D':
 		cmdDeleteItem()
