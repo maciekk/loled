@@ -1,7 +1,6 @@
 // List of List (LOL) EDitor
 //
 // TODO
-// - add Ctrl-W binding in text edit to delete last word
 // - rather than printing "root", the root node should be labeled with
 //   filename being edited.
 // - load() should probably reset current List and item to root, first item
@@ -52,6 +51,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"unicode"
 
 	"github.com/jroimartin/gocui"
 	"github.com/nsf/termbox-go"
@@ -306,6 +306,8 @@ func fullerEditor(v *gocui.View, key gocui.Key, ch rune, mod gocui.Modifier) {
 		v.MoveCursor(-1, 0, false)
 	case key == gocui.KeyCtrlF:
 		v.MoveCursor(+1, 0, false)
+	// None of the following are aware that the line may be scrolled
+	// (i.e., origin has moved) TODO: fix
 	case key == gocui.KeyCtrlE:
 		// end of line
 		curLine, err := v.Line(y)
@@ -321,6 +323,24 @@ func fullerEditor(v *gocui.View, key gocui.Key, ch rune, mod gocui.Modifier) {
 		for x > 0 {
 			v.EditDelete(true)
 			x, y = v.Cursor()
+		}
+	case key == gocui.KeyCtrlW:
+		s, err := v.Line(y)
+		if err != nil {
+			panic(err)
+		}
+		if x-1 >= len(s) {
+			break
+		}
+		// Consume backwards all non-whitespace (i.e., last word)
+		for x > 0 && !unicode.IsSpace(rune(s[x-1])) {
+			x -= 1
+			v.EditDelete(true)
+		}
+		// Now consume the trailing whitespace.
+		for x > 0 && unicode.IsSpace(rune(s[x-1])) {
+			x -= 1
+			v.EditDelete(true)
 		}
 	default:
 		// If we didn't handle key above, pass through to base editor.
