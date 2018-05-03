@@ -989,8 +989,40 @@ func dialog(g *gocui.Gui, title, prefill string) *LineEditor {
 
 func layout(g *gocui.Gui) error {
 	maxX, maxY := g.Size()
-	mainPaneWidth := min(PANE_MAIN_MAX_WIDTH, maxX-2)
-	if v, err := g.SetView("main", 0, 0, mainPaneWidth, maxY-3-1); err != nil {
+	var dimsMain, dimsMsg [4]int
+	if maxX < 80 {
+		// Vertical layout
+		mainPaneHeight := maxY - 10 - 1
+		dimsMain = [4]int{
+			0,
+			0,
+			maxX - 1,
+			mainPaneHeight,
+		}
+		dimsMsg = [4]int{
+			0,
+			mainPaneHeight + 1,
+			maxX - 1,
+			maxY - 1,
+		}
+
+	} else {
+		// Horizontal layout
+		mainPaneWidth := min(PANE_MAIN_MAX_WIDTH, maxX-40)
+		dimsMain = [4]int{
+			0,
+			0,
+			mainPaneWidth,
+			maxY - 1,
+		}
+		dimsMsg = [4]int{
+			mainPaneWidth + 1 + 3,
+			0,
+			maxX - 1,
+			maxY / 2,
+		}
+	}
+	if v, err := g.SetView("main", dimsMain[0], dimsMain[1], dimsMain[2], dimsMain[3]); err != nil {
 		if err != gocui.ErrUnknownView {
 			return err
 		}
@@ -1013,7 +1045,7 @@ func layout(g *gocui.Gui) error {
 			ds.setCurrentItemIndex(0)
 		}
 	}
-	if v, err := g.SetView("message", mainPaneWidth+1+4, 0, maxX-1, maxY/2); err != nil {
+	if v, err := g.SetView("message", dimsMsg[0], dimsMsg[1], dimsMsg[2], dimsMsg[3]); err != nil {
 		if err != gocui.ErrUnknownView {
 			return err
 		}
