@@ -243,9 +243,9 @@ func (le *LolEditor) NormalMode(v *gocui.View, key gocui.Key, ch rune, mod gocui
 		Log("Switched to MOVE mode.")
 		le.modeMove = true
 		updateMainPane()
-	case ch == 'j':
+	case ch == 'j' || key == gocui.KeyArrowDown:
 		cmdNextItem()
-	case ch == 'k':
+	case ch == 'k' || key == gocui.KeyArrowUp:
 		cmdPrevItem()
 	case ch == 'J' || ch == '$' || ch == '-':
 		cmdLastItem()
@@ -302,22 +302,28 @@ type LineEditor struct {
 func fullerEditor(v *gocui.View, key gocui.Key, ch rune, mod gocui.Modifier) {
 	x, y := v.Cursor()
 	switch {
-	case key == gocui.KeyCtrlB:
+	case key == gocui.KeyCtrlB,
+		key == gocui.KeyArrowLeft:
 		v.MoveCursor(-1, 0, false)
-	case key == gocui.KeyCtrlF:
+	case key == gocui.KeyCtrlF,
+		key == gocui.KeyArrowRight:
 		v.MoveCursor(+1, 0, false)
 	// None of the following are aware that the line may be scrolled
 	// (i.e., origin has moved) TODO: fix
-	case key == gocui.KeyCtrlE:
+	case key == gocui.KeyCtrlE,
+		key == gocui.KeyEnd:
 		// end of line
 		curLine, err := v.Line(y)
 		if err != nil {
 			panic(err)
 		}
 		v.MoveCursor(len(curLine)-x, 0, false)
-	case key == gocui.KeyCtrlA:
+	case key == gocui.KeyCtrlA,
+		key == gocui.KeyHome:
 		// beginning of line
 		v.MoveCursor(-x, 0, false)
+	case key == gocui.KeyCtrlD:
+		v.EditDelete(false)
 	case key == gocui.KeyCtrlU:
 		// erase to beginning of line
 		for x > 0 {
@@ -440,7 +446,8 @@ func (ds *dataStore) currentItem() *node {
 
 // Sets current item and updates the UI selection bar to it.
 func (ds *dataStore) setCurrentItemIndex(idx int) {
-	if idx < 0 {
+	items := ds.currentItems()
+	if idx < 0 || len(*items) == 0 {
 		// no selected item
 		ds.idCurrentItem = -1
 		if vd.paneMain != nil {
@@ -448,7 +455,6 @@ func (ds *dataStore) setCurrentItemIndex(idx int) {
 		}
 		return
 	}
-	items := ds.currentItems()
 	if idx > len(*items)-1 {
 		panic(fmt.Sprintf(
 			"Bad index for setCurrentItemIndex(): %v (len = %v)\n",
@@ -1066,6 +1072,10 @@ func updateMainPane() {
 	vd.paneMain.Clear()
 
 	n := ds.currentList()
+
+	if n == nil {
+		panic("currentList not found!")
+	}
 
 	title := fmt.Sprintf("▶ %v", n.label) // TODO: add more info
 	fmt.Fprintln(vd.paneMain, title)
