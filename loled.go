@@ -147,6 +147,8 @@ type node struct {
 	tagged bool
 }
 
+// A "pointer" into the mass structure of list-of-lists. Identifies an item
+// position, much like a cursor.
 type Target struct {
 	list  int
 	index int
@@ -294,7 +296,6 @@ func (le *LolEditor) NormalMode(v *gocui.View, key gocui.Key, ch rune, mod gocui
 	case ch == 'M':
 		cmdMoveToTarget(&ds.Mark)
 	case ch == 'D':
-		//cmdDeleteItem()
 		cmdMoveToTarget(ds.Trash)
 		/*
 			case ch == 'q':
@@ -449,6 +450,10 @@ func (ds *dataStore) init() {
 
 	// Ensure Trash exists.
 	if ds.Trash == nil {
+		// NOTE: save() does NOT save Trash, hence we know we need to
+		// create it here.
+		// TODO: this is actually to do.
+
 		// First, need cursor at end of root list.
 		ds.idCurrentList = 0 // root
 		if len(rootkids) > 0 {
@@ -603,31 +608,6 @@ func (ds *dataStore) replaceItem(s string) {
 	}
 
 	n.label = s
-
-	ds.dirty = true
-}
-
-func (ds *dataStore) deleteItem() {
-	if ds.idCurrentItem < 0 {
-		// no items
-		return
-	}
-
-	if len(ds.nodes[ds.idCurrentItem].sublist) > 0 {
-		// TODO: delete all child nodes too
-		Log("Deletion of non-leaf nodes not supported yet.")
-		return
-	}
-
-	kids := &ds.currentList().sublist
-	i := ds.currentItemIndex()
-
-	*kids = append((*kids)[:i], (*kids)[i+1:]...)
-	delete(ds.nodes, ds.idCurrentItem)
-
-	// Make sure index is still valid
-	i = min(i, len(*kids)-1)
-	ds.setCurrentItemIndex(i)
 
 	ds.dirty = true
 }
@@ -1196,11 +1176,6 @@ func cmdReplaceItem() {
 		ds.replaceItem(ss[0])
 		updateMainPane()
 	}
-}
-
-func cmdDeleteItem() {
-	ds.deleteItem()
-	updateMainPane()
 }
 
 func cmdToggleItem() {
