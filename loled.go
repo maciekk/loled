@@ -274,9 +274,9 @@ func (le *LolEditor) NormalMode(v *gocui.View, key gocui.Key, ch rune, mod gocui
 		cmdNextItem()
 	case ch == 'k' || key == gocui.KeyArrowUp:
 		cmdPrevItem()
-	case ch == 'J' || ch == '$' || ch == '-':
+	case ch == 'J' || ch == '$' || ch == '-' || ch == 'G':
 		cmdLastItem()
-	case ch == 'K' || ch == '0':
+	case ch == 'K' || ch == '0' || ch == 'g':
 		cmdFirstItem()
 	case ch == 'a' || ch == 'o':
 		cmdAddItems()
@@ -296,10 +296,10 @@ func (le *LolEditor) NormalMode(v *gocui.View, key gocui.Key, ch rune, mod gocui
 		// Can't use gocuy.KeyCtrlSpace as it == 0 / matches most
 		// regular keypresses (because key == 0 then)
 		cmdToggleAllItems()
-	case ch == 'g':
-		cmdGroupItems()
-	case ch == 'G':
-		cmdUngroupItems()
+	case ch == 'f':
+		cmdFoldItems()
+	case ch == 'F':
+		cmdUnfoldItems()
 	case ch == 't':
 		cmdSetUserTarget()
 	case ch == 'T':
@@ -738,16 +738,16 @@ func (ds *dataStore) MoveToTarget(t *Target) {
 	ds.idCurrentItem = idNewCurrentItem
 }
 
-func (ds *dataStore) ungroupItems() {
+func (ds *dataStore) unfoldItems() {
 	if ds.idCurrentItem < 0 || len(ds.currentItem().sublist) < 1 {
-		Log("Cannot ungroup, item invalid or has no sublist.")
+		Log("Cannot unfold, item invalid or has no sublist.")
 		return
 	}
 
 	kids := ds.currentItems()
 	subkids := ds.currentItem().sublist
 
-	// Remove group node from kids.
+	// Remove fold node from kids.
 	i := ds.currentItemIndex()
 	*kids = append((*kids)[:i], (*kids)[i+1:]...)
 	delete(ds.nodes, ds.idCurrentItem)
@@ -764,7 +764,7 @@ func (ds *dataStore) ungroupItems() {
 	ds.dirty = true
 }
 
-func (ds *dataStore) groupTaggedItemsUnder(name string) {
+func (ds *dataStore) foldTaggedItemsUnder(name string) {
 	kids := ds.currentItems()
 	listTagged := []int{}
 	listUntagged := []int{}
@@ -785,7 +785,7 @@ func (ds *dataStore) groupTaggedItemsUnder(name string) {
 	// Clean up current list.
 	*kids = listUntagged
 
-	// Create new node for group.
+	// Create new node for fold.
 	n := node{
 		ds.freeID,        // ID
 		name,             // payload
@@ -1265,17 +1265,17 @@ func cmdToggleAllItems() {
 	updateMainPane()
 }
 
-func cmdGroupItems() {
-	dlgEditor := dialog(vd.gui, "Group", "")
+func cmdFoldItems() {
+	dlgEditor := dialog(vd.gui, "Fold", "")
 	dlgEditor.multiline = false
 	dlgEditor.onFinish = func(ss []string) {
-		ds.groupTaggedItemsUnder(ss[0])
+		ds.foldTaggedItemsUnder(ss[0])
 		updateMainPane()
 	}
 }
 
-func cmdUngroupItems() {
-	ds.ungroupItems()
+func cmdUnfoldItems() {
+	ds.unfoldItems()
 	updateMainPane()
 }
 
