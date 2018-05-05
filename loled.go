@@ -1,6 +1,7 @@
 // List of Lists (LOL) EDitor
 //
 // TODO
+// - Done & Trash should move such that most recent is topmost in their lists
 // - bug: segfaults on empty *.lol file
 // - need command to expunge Trash
 // - maybe no node should have ID 0, not even root, to make clear when using
@@ -85,6 +86,8 @@ var sfxMore = " ▼"
 
 const (
 	PANE_MAIN_MAX_WIDTH = 60
+	LABEL_TRASH         = "[[TRASH]]"
+	LABEL_DONE          = "[[DONE]]"
 )
 
 const (
@@ -189,7 +192,8 @@ type dataStore struct {
 
 	// Pre-defined special targets.
 	// NOTE: using * so that able to differentiate uninitialized Target.
-	Trash *Target // Where deleted items are moved.
+	markTrash *Target // Where deleted items are moved.
+	markDone  *Target // Where DONE items are moved.
 }
 
 // The "View" component of MVC framework.
@@ -302,8 +306,10 @@ func (le *LolEditor) NormalMode(v *gocui.View, key gocui.Key, ch rune, mod gocui
 		cmdGoToUserTarget()
 	case ch == 'M':
 		cmdMoveToTarget(&ds.Mark)
+	case ch == 'd':
+		cmdMoveToTarget(ds.markDone)
 	case ch == 'D':
-		cmdMoveToTarget(ds.Trash)
+		cmdMoveToTarget(ds.markTrash)
 		/*
 			case ch == 'q':
 				quit()
@@ -455,8 +461,8 @@ func (ds *dataStore) init() {
 
 	rootkids := ds.nodes[0].sublist
 
-	// Ensure Trash exists.
-	if ds.Trash == nil {
+	// Ensure DONE exists.
+	if ds.markDone == nil {
 		// First, need cursor at end of root list.
 		ds.idCurrentList = 0 // root
 		if len(rootkids) > 0 {
@@ -464,8 +470,21 @@ func (ds *dataStore) init() {
 		} else {
 			ds.idCurrentItem = -1
 		}
-		n := ds.appendItem("[Trash]")
-		ds.Trash = &Target{n.id, -1} // -1 id because Trash list empty
+		n := ds.appendItem(LABEL_DONE)
+		ds.markDone = &Target{n.id, -1} // -1 id because Trash list empty
+	}
+
+	// Ensure Trash exists.
+	if ds.markTrash == nil {
+		// First, need cursor at end of root list.
+		ds.idCurrentList = 0 // root
+		if len(rootkids) > 0 {
+			ds.idCurrentItem = rootkids[len(rootkids)-1]
+		} else {
+			ds.idCurrentItem = -1
+		}
+		n := ds.appendItem(LABEL_TRASH)
+		ds.markTrash = &Target{n.id, -1} // -1 id because Trash list empty
 	}
 
 	// Reset cursor.
@@ -891,9 +910,13 @@ func (ds *dataStore) save() {
 	}
 
 	// First, write out special node ids.
-	if ds.Trash != nil {
-		idTrash := ds.nodes[ds.Trash.list].id
-		f.WriteString(fmt.Sprintf("trash %v\n", idTrash))
+	if ds.markDone != nil {
+		idDone := ds.nodes[ds.markDone.list].id
+		f.WriteString(fmt.Sprintf("DONE %v\n", idDone))
+	}
+	if ds.markTrash != nil {
+		idTrash := ds.nodes[ds.markTrash.list].id
+		f.WriteString(fmt.Sprintf("TRASH %v\n", idTrash))
 	}
 
 	// Finally, dump out the whole node database.
@@ -931,6 +954,7 @@ func (ds *dataStore) load() {
 		return
 	}
 
+	var idDone = -1
 	var idTrash = -1
 
 	lines := strings.Split(string(data), "\n")
@@ -949,7 +973,16 @@ func (ds *dataStore) load() {
 		}
 
 		// First watch for special nodes.
-		if strings.HasPrefix(l, "trash ") {
+		if strings.HasPrefix(l, "DONE ") {
+			l = l[5:]
+			id, err := strconv.Atoi(l)
+			if err != nil {
+				panic(err)
+			}
+			idDone = id
+			continue
+		}
+		if strings.HasPrefix(l, "TRASH ") {
 			l = l[6:]
 			id, err := strconv.Atoi(l)
 			if err != nil {
@@ -1015,9 +1048,13 @@ func (ds *dataStore) load() {
 	ds.nodes[0].parent = -1
 
 	// Handle special Targets.
+	if idDone > 0 {
+		n := ds.nodes[idDone]
+		ds.markDone = &Target{n.id, len(n.sublist) - 1}
+	}
 	if idTrash > 0 {
 		n := ds.nodes[idTrash]
-		ds.Trash = &Target{n.id, len(n.sublist) - 1}
+		ds.markTrash = &Target{n.id, len(n.sublist) - 1}
 	}
 
 	ds.idCurrentList = 0
