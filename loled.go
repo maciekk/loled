@@ -1,6 +1,8 @@
 // List of Lists (LOL) EDitor
 //
 // TODO
+// - bug: segfaults on empty *.lol file
+// - need command to expunge Trash
 // - maybe no node should have ID 0, not even root, to make clear when using
 //   uninitialized int? (root could be 1)
 // - rather than printing "root", the root node should be labeled with
@@ -149,9 +151,14 @@ type node struct {
 
 // A "pointer" into the mass structure of list-of-lists. Identifies an item
 // position, much like a cursor.
+//
+// NOTE: *careful*, both Target and currentitem notation uses two ints, but
+// note diff in second one: Target gives index of item, whereas cursor gives
+// ID of item.
+// TODO: standardize.
 type Target struct {
-	list  int
-	index int
+	list  int // ID of list within which Target lies
+	index int // Target points at item at this index.
 }
 
 // The "Model" component of MVC framework.
@@ -450,10 +457,6 @@ func (ds *dataStore) init() {
 
 	// Ensure Trash exists.
 	if ds.Trash == nil {
-		// NOTE: save() does NOT save Trash, hence we know we need to
-		// create it here.
-		// TODO: this is actually to do.
-
 		// First, need cursor at end of root list.
 		ds.idCurrentList = 0 // root
 		if len(rootkids) > 0 {
@@ -461,8 +464,8 @@ func (ds *dataStore) init() {
 		} else {
 			ds.idCurrentItem = -1
 		}
-		n := ds.appendItem("[Trash]") // TODO: should we NOT set ds.dirty?
-		ds.Trash = &Target{n.id, -1}  // -1 id because Trash list empty
+		n := ds.appendItem("[Trash]")
+		ds.Trash = &Target{n.id, -1} // -1 id because Trash list empty
 	}
 
 	// Reset cursor.
@@ -473,6 +476,16 @@ func (ds *dataStore) init() {
 		// invalid == no current item
 		ds.idCurrentItem = -1
 	}
+}
+
+func (ds *dataStore) idForNode(n *node) int {
+	for k, v := range ds.nodes {
+		if v == n {
+			return k
+		}
+	}
+	// Not found.
+	return -1
 }
 
 func (ds *dataStore) currentList() *node {
@@ -877,6 +890,13 @@ func (ds *dataStore) save() {
 		return
 	}
 
+	// First, write out special node ids.
+	if ds.Trash != nil {
+		idTrash := ds.nodes[ds.Trash.list].id
+		f.WriteString(fmt.Sprintf("trash %v\n", idTrash))
+	}
+
+	// Finally, dump out the whole node database.
 	keys := make([]int, 0)
 	for _, n := range ds.nodes {
 		keys = append(keys, n.id)
@@ -911,6 +931,8 @@ func (ds *dataStore) load() {
 		return
 	}
 
+	var idTrash = -1
+
 	lines := strings.Split(string(data), "\n")
 
 	var l string
@@ -923,6 +945,17 @@ func (ds *dataStore) load() {
 
 		// Skip any blank lines.
 		if strings.Trim(l, whitespace) == "" {
+			continue
+		}
+
+		// First watch for special nodes.
+		if strings.HasPrefix(l, "trash ") {
+			l = l[6:]
+			id, err := strconv.Atoi(l)
+			if err != nil {
+				panic(err)
+			}
+			idTrash = id
 			continue
 		}
 
@@ -980,6 +1013,12 @@ func (ds *dataStore) load() {
 	}
 	// Also adjust root's parent.
 	ds.nodes[0].parent = -1
+
+	// Handle special Targets.
+	if idTrash > 0 {
+		n := ds.nodes[idTrash]
+		ds.Trash = &Target{n.id, len(n.sublist) - 1}
+	}
 
 	ds.idCurrentList = 0
 	ds.setCurrentItemIndex(-1)
