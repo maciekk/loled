@@ -1,6 +1,8 @@
-// List of List (LOL) EDitor
+// List of Lists (LOL) EDitor
 //
 // TODO
+// - maybe no node should have ID 0, not even root, to make clear when using
+//   uninitialized int? (root could be 1)
 // - rather than printing "root", the root node should be labeled with
 //   filename being edited.
 // - load() should probably reset current List and item to root, first item
@@ -145,12 +147,17 @@ type node struct {
 	tagged bool
 }
 
+type Target struct {
+	list  int
+	index int
+}
+
 // The "Model" component of MVC framework.
 type dataStore struct {
 	// Repository of all the nodes, keyed by node ID.
 	nodes map[int]*node
 
-	// Next free node ID.
+	// Next free node ID for use as key in 'nodes'.
 	freeID int
 
 	// Current list and currently selected item in it.
@@ -158,11 +165,22 @@ type dataStore struct {
 	// NOTE: it is possible the list is empty, and thus does not have a
 	// selected item. In that case idCurrentItem is negative to indicate
 	// this.
+	// TODO: this too should be a Target (and probably name 'cursor').
 	idCurrentList int
 	idCurrentItem int
 
 	// Indicates if data has been modified, and needs to be saved.
 	dirty bool
+
+	// User-defined targets.
+	//
+	// NOTE: in future we will have multiple; these will be like  "marks"
+	// in Vim.
+	Mark Target
+
+	// Pre-defined special targets.
+	// NOTE: using * so that able to differentiate uninitialized Target.
+	Trash *Target // Where deleted items are moved.
 }
 
 // The "View" component of MVC framework.
@@ -181,10 +199,6 @@ type viewData struct {
 
 	// primary editor
 	editorLol *LolEditor
-
-	// Target info
-	idTargetList  int
-	idTargetIndex int
 }
 
 type LolEditor struct {
@@ -253,8 +267,6 @@ func (le *LolEditor) NormalMode(v *gocui.View, key gocui.Key, ch rune, mod gocui
 		cmdFirstItem()
 	case ch == 'a' || ch == 'o':
 		cmdAddItems()
-	case ch == 'D':
-		cmdDeleteItem()
 	case ch == 'r':
 		cmdReplaceItem()
 	case ch == '<' || ch == 'u':
@@ -276,11 +288,14 @@ func (le *LolEditor) NormalMode(v *gocui.View, key gocui.Key, ch rune, mod gocui
 	case ch == 'G':
 		cmdUngroupItems()
 	case ch == 't':
-		cmdSetTarget()
-	case ch == 'M':
-		cmdMoveToTarget()
+		cmdSetUserTarget()
 	case ch == 'T':
-		cmdGoToTarget()
+		cmdGoToUserTarget()
+	case ch == 'M':
+		cmdMoveToTarget(&ds.Mark)
+	case ch == 'D':
+		//cmdDeleteItem()
+		cmdMoveToTarget(ds.Trash)
 		/*
 			case ch == 'q':
 				quit()
@@ -406,26 +421,53 @@ func Log(s string, a ...interface{}) {
 
 ////////////////////////////////////////
 // methods
+
+// (Finish) initializing data store.
+// Has two use-cases:
+// - fresh after startup: initializes everything (e.g., incl. 'nodes')
+// - after a file load: primarily initializes remaining view parameters (e.g.,
+//   cursor)
 func (ds *dataStore) init() {
-	// TODO: init() has uneasy relationship currently with any subsequent
-	// load(), which we *should* do next. In particular, forcibly adding
-	// "root" node now, and/or dirty marker are questionable.
 	ds.dirty = false
 
-	root := node{
-		0, // ID
-		"root",
-		-1, // invalid parent id (i.e., no parent)
-		make([]int, 0),
-		false, // tagged
+	// This runs only on startup; 'load' will have populated this.
+	if ds.nodes == nil {
+		root := node{
+			0, // ID
+			"root",
+			-1, // invalid parent id (i.e., no parent)
+			make([]int, 0),
+			false, // tagged
+		}
+		ds.nodes = make(map[int]*node, 1)
+		ds.nodes[0] = &root
+
+		ds.freeID = 1
 	}
-	ds.nodes = make(map[int]*node, 1)
-	ds.nodes[0] = &root
 
-	ds.freeID = 1
+	rootkids := ds.nodes[0].sublist
 
-	ds.idCurrentList = 0  // root
-	ds.idCurrentItem = -1 // invalid == no current item
+	// Ensure Trash exists.
+	if ds.Trash == nil {
+		// First, need cursor at end of root list.
+		ds.idCurrentList = 0 // root
+		if len(rootkids) > 0 {
+			ds.idCurrentItem = rootkids[len(rootkids)-1]
+		} else {
+			ds.idCurrentItem = -1
+		}
+		n := ds.appendItem("[Trash]") // TODO: should we NOT set ds.dirty?
+		ds.Trash = &Target{n.id, -1}  // -1 id because Trash list empty
+	}
+
+	// Reset cursor.
+	ds.idCurrentList = 0 // root; TODO: find this by name, in case load() led to diff idx
+	if len(rootkids) > 0 {
+		ds.idCurrentItem = 0
+	} else {
+		// invalid == no current item
+		ds.idCurrentItem = -1
+	}
 }
 
 func (ds *dataStore) currentList() *node {
@@ -519,7 +561,8 @@ func insertKid(newkid int, kids *[]int, pos int) {
 	(*kids)[pos] = newkid
 }
 
-func (ds *dataStore) appendItem(s string) {
+// Returns the created node.
+func (ds *dataStore) appendItem(s string) *node {
 	// sanity check
 	if _, ok := ds.nodes[ds.freeID]; ok {
 		panic("freeID is not free")
@@ -542,6 +585,8 @@ func (ds *dataStore) appendItem(s string) {
 	ds.setCurrentItemIndex(i + 1)
 
 	ds.dirty = true
+
+	return &n
 }
 
 // Replace the current item's label with the provided string.
@@ -609,29 +654,31 @@ func (ds *dataStore) toggleAllItems() {
 
 }
 
-func (ds *dataStore) SetTarget() {
-	vd.idTargetList = ds.idCurrentList
-	vd.idTargetIndex = ds.currentItemIndex()
+func (ds *dataStore) SetUserTarget() {
+	ds.Mark.list = ds.idCurrentList
+	ds.Mark.index = ds.currentItemIndex()
 	Log("Target set.")
 }
 
-func (ds *dataStore) GoToTarget() {
+func (ds *dataStore) GoToUserTarget() {
 	// TODO: how does this behave when both Target vars are zero? (i.e.,
 	// at startup) ID==0 happens to amount to the root list (good), but
 	// current item is the root list as well... should trigger "item not
 	// in list" warning.
-	ds.idCurrentList = vd.idTargetList
+	ds.idCurrentList = ds.Mark.list
 	// Check if Target is on a list with no items.
-	if vd.idTargetIndex == -1 {
+	if ds.Mark.index == -1 {
 		ds.idCurrentItem = -1
 	} else {
-		ds.idCurrentItem = (*ds.currentItems())[vd.idTargetIndex]
+		ds.idCurrentItem = (*ds.currentItems())[ds.Mark.index]
 	}
-	ds.setCurrentItemIndex(vd.idTargetIndex)
+	ds.setCurrentItemIndex(ds.Mark.index)
 	Log("Jumped to Target.")
 }
 
-func (ds *dataStore) MoveToTarget() {
+// Move cursor to given target 't'.
+// Also, if move did occur, advances the target to point at moved item.
+func (ds *dataStore) MoveToTarget(t *Target) {
 	// Check that there is anything to do.
 	if ds.idCurrentItem < 0 || ds.idCurrentList < 0 {
 		Log("No current list or item.")
@@ -655,13 +702,13 @@ func (ds *dataStore) MoveToTarget() {
 		idNewCurrentItem = (*kids)[i]
 	}
 
-	// Now place it at Target.
-	kids = &ds.nodes[vd.idTargetList].sublist
+	// Now place it at Target
+	kids = &ds.nodes[t.list].sublist
 	if len(*kids) == 0 {
 		*kids = []int{ds.idCurrentItem}
 	} else {
 		*kids = append(*kids, -1) // extend length by 1
-		i = vd.idTargetIndex + 1  // insertion desired AFTER target
+		i = t.index + 1           // insertion desired AFTER Mark
 		// There is a second part to shift only if item to insert is
 		// not meant as last item.
 		if i < len(*kids)-1 {
@@ -670,10 +717,10 @@ func (ds *dataStore) MoveToTarget() {
 		(*kids)[i] = ds.idCurrentItem
 	}
 
-	// Next, advance target location offset, so that next item is added
-	// AFTER the one we just added (so that sequence of items added
-	// remains in the correct order).
-	vd.idTargetIndex += 1
+	// Next, advance Mark location offset to point to the currently added
+	// item, so that NEXT item is added AFTER the one we just added (so
+	// that sequence of items added remains in the correct order).
+	t.index += 1
 
 	// Finally make sure current item is its former successor.
 	ds.idCurrentItem = idNewCurrentItem
@@ -1219,18 +1266,18 @@ func cmdLoadData() {
 	ds.load()
 }
 
-func cmdSetTarget() {
-	ds.SetTarget()
+func cmdSetUserTarget() {
+	ds.SetUserTarget()
 	// No need to update pane.
 }
 
-func cmdMoveToTarget() {
-	ds.MoveToTarget()
+func cmdMoveToTarget(t *Target) {
+	ds.MoveToTarget(t)
 	updateMainPane()
 }
 
-func cmdGoToTarget() {
-	ds.GoToTarget()
+func cmdGoToUserTarget() {
+	ds.GoToUserTarget()
 	updateMainPane()
 }
 
@@ -1288,6 +1335,7 @@ func main() {
 	// Set up data.
 	if _, err := os.Stat(*filename); err == nil {
 		ds.load()
+		ds.init()
 	} else {
 		fmt.Printf("Unable to stat %q; creating empty dataStore instead.\n", *filename)
 		ds.init()
