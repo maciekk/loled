@@ -1,8 +1,10 @@
 // List of Lists (LOL) EDitor
 //
 // TODO
+// - add Status window, on top of log window: logo + stats about datastore
 // - Done & Trash should move such that most recent is topmost in their lists
 // - bug: segfaults on empty *.lol file
+// - bug: on fold, when items at start of list, visible cursor not adjusted.
 // - need command to expunge Trash
 // - maybe no node should have ID 0, not even root, to make clear when using
 //   uninitialized int? (root could be 1)
