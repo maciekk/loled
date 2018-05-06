@@ -149,14 +149,13 @@ type node struct {
 
 // A "pointer" into the mass structure of list-of-lists. Identifies an item
 // position, much like a cursor.
-//
-// NOTE: *careful*, both Target and currentitem notation uses two ints, but
-// note diff in second one: Target gives index of item, whereas cursor gives
-// ID of item.
-// TODO: standardize.
 type Target struct {
 	list  *node // list within which Target lies
 	index int   // Target points at item at this index.
+	// Target really occupies space BETWEEN characters, which gives two
+	// possibilities when pointing at an item using a list index: just
+	// before it, or just after.
+	before bool
 }
 
 // The "Model" component of MVC framework.
@@ -298,13 +297,9 @@ func (le *LolEditor) NormalMode(v *gocui.View, key gocui.Key, ch rune, mod gocui
 	case ch == 'M':
 		cmdMoveCurrentItemToTarget(&ds.Mark)
 	case ch == 'd':
-		// TODO: need to adjust marker so it is valid, and also want to
-		// point at TOP of list (reverse chrono).
-		cmdMoveCurrentItemToTarget(ds.markDone)
+		cmdMoveToDone()
 	case ch == 'D':
-		// TODO: need to adjust marker so it is valid, and also want to
-		// point at TOP of list (reverse chrono).
-		cmdMoveCurrentItemToTarget(ds.markTrash)
+		cmdMoveToTrash()
 	case ch == 'X':
 		cmdExpungeTrash()
 		/*
@@ -467,7 +462,7 @@ func (ds *dataStore) init() {
 			ds.currentItem = nil
 		}
 		n := ds.appendItem(LABEL_DONE)
-		ds.markDone = &Target{n, -1} // -1 id because Trash list empty
+		ds.markDone = &Target{n, 0, true} // always just before first item
 	}
 
 	// Ensure Trash exists.
@@ -479,7 +474,7 @@ func (ds *dataStore) init() {
 			ds.currentItem = nil
 		}
 		n := ds.appendItem(LABEL_TRASH)
-		ds.markTrash = &Target{n, -1} // -1 id because Trash list empty
+		ds.markTrash = &Target{n, 0, true} // always just before first item
 	}
 
 	// Reset cursor.
@@ -624,6 +619,11 @@ func (ds *dataStore) toggleAllItems() {
 func (ds *dataStore) SetUserTarget() {
 	ds.Mark.list = ds.currentList
 	ds.Mark.index = ds.currentItemIndex()
+	// User marks are ALWAYS 'after', at least for now.
+	// TODO: theoretically could have different key bindings for 'before'
+	// and 'after'. However, not clear how to indicate visually which one
+	// we have, on GoToUserTarget().
+	ds.Mark.before = false
 	Log("Target set.")
 }
 
@@ -644,8 +644,10 @@ func (ds *dataStore) GoToUserTarget() {
 }
 
 func (ds *dataStore) ExpungeTrash() {
-	ds.markTrash.list.sublist = ds.markTrash.list.sublist[0:0]
-	ds.dirty = true
+	if len(ds.markTrash.list.sublist) > 0 {
+		ds.markTrash.list.sublist = ds.markTrash.list.sublist[0:0]
+		ds.dirty = true
+	}
 }
 
 // Move cursor to given target 't'.
@@ -682,27 +684,36 @@ func (ds *dataStore) MoveCurrentItemToTarget(t *Target) {
 		*kids = []*node{ds.currentItem}
 	} else {
 		*kids = append(*kids, nil) // extend length by 1
-		i = t.index + 1            // insertion desired AFTER Mark
+		i = t.index
+		if !t.before {
+			i += 1
+		}
 		// There is a second part to shift only if item to insert is
 		// not meant as last item.
 		if i < len(*kids)-1 {
 			copy((*kids)[i+1:], (*kids)[i:])
 		}
 		if i > len(*kids)-1 {
-			Log("Target pointing beyond list (idx=%v vs maxidx=%v).",
+			Log("WARNING: Target pointing beyond list (idx=%v vs maxidx=%v).",
 				i, len(*kids)-1)
 			i = len(*kids) - 1
 		}
 		(*kids)[i] = ds.currentItem
 	}
 
-	// Next, advance Mark location offset to point to the currently added
-	// item, so that NEXT item is added AFTER the one we just added (so
-	// that sequence of items added remains in the correct order).
-	t.index += 1
+	// Maybe advance Target index, depending on type of Target. Behaviour
+	// is determined by what the end effect is of moving multiple items
+	// using these Targets:
+	// "Before" Targets: desired effect = reverse chronological addition
+	// "After" Targets: desired effect = chronological addition
+	if !t.before {
+		t.index += 1
+	}
 
 	// Finally make sure current item is its former successor.
 	ds.currentItem = newCurrentItem
+
+	ds.dirty = true
 }
 
 func (ds *dataStore) unfoldItems() {
@@ -1051,11 +1062,11 @@ func (ds *dataStore) load() {
 	// Handle special Targets.
 	if idDone > 0 {
 		n := nodeMap[idDone].n
-		ds.markDone = &Target{n, len(n.sublist) - 1}
+		ds.markDone = &Target{n, 0, true}
 	}
 	if idTrash > 0 {
 		n := nodeMap[idTrash].n
-		ds.markTrash = &Target{n, len(n.sublist) - 1}
+		ds.markTrash = &Target{n, 0, true}
 	}
 
 	ds.currentList = ds.root
@@ -1324,6 +1335,16 @@ func cmdSetUserTarget() {
 
 func cmdMoveCurrentItemToTarget(t *Target) {
 	ds.MoveCurrentItemToTarget(t)
+	updateMainPane()
+}
+
+func cmdMoveToDone() {
+	ds.MoveCurrentItemToTarget(ds.markDone)
+	updateMainPane()
+}
+
+func cmdMoveToTrash() {
+	ds.MoveCurrentItemToTarget(ds.markTrash)
 	updateMainPane()
 }
 
