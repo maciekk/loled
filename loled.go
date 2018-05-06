@@ -1,17 +1,13 @@
 // List of Lists (LOL) EDitor
 //
 // TODO
-// - add Status window, on top of log window: logo + stats about datastore
+// - need command to expunge Trash
 // - Done & Trash should move such that most recent is topmost in their lists
+// - add Status window, on top of log window: logo + stats about datastore
 // - bug: segfaults on empty *.lol file
 // - bug: on fold, when items at start of list, visible cursor not adjusted.
-// - need command to expunge Trash
-// - maybe no node should have ID 0, not even root, to make clear when using
-//   uninitialized int? (root could be 1)
 // - rather than printing "root", the root node should be labeled with
 //   filename being edited.
-// - load() should probably reset current List and item to root, first item
-// - it should also probably reset Target (some other ops probably as well)
 // - clean up finally the singletons (vd & ds), and distribute methods better!
 // - now that can hop with random-access, need "go back" command
 // - maybe we should have ability to memorize and jump to a memorized location
@@ -30,7 +26,6 @@
 // - keep these TODOs a *.lol (i.e., dogfood)?
 // - soon will need to figure out how to handle lists too long for screen
 //   height (i.e., scrolling)
-// - explore going back to 'sublist' being []*node, rather than []int of IDs
 // - list of recent *.lol files edited should itself be a list under root
 // - every save, renumber node IDs to compact them, to remove holes.
 // - ASCII-ify "so excited" happy face, use as initial logo?
@@ -55,7 +50,6 @@ import (
 	"io/ioutil"
 	"os"
 	"os/exec"
-	"sort"
 	"strconv"
 	"strings"
 	"unicode"
@@ -142,14 +136,12 @@ const (
 // lists of ..., is essentially a tree. Here, a node is an element in that
 // tree.
 type node struct {
-	// node identifier #
-	id int
 	// node content payload
 	label string
-	// ID of parent node
-	parent int
-	// list of children IDs
-	sublist []int
+	// parent node; nil if no parent (should be true only for root node)
+	parent *node
+	// list of children
+	sublist []*node
 	// Is it tagged?
 	tagged bool
 }
@@ -162,26 +154,22 @@ type node struct {
 // ID of item.
 // TODO: standardize.
 type Target struct {
-	list  int // ID of list within which Target lies
-	index int // Target points at item at this index.
+	list  *node // list within which Target lies
+	index int   // Target points at item at this index.
 }
 
 // The "Model" component of MVC framework.
 type dataStore struct {
-	// Repository of all the nodes, keyed by node ID.
-	nodes map[int]*node
-
-	// Next free node ID for use as key in 'nodes'.
-	freeID int
+	// Root node
+	root *node
 
 	// Current list and currently selected item in it.
 	//
 	// NOTE: it is possible the list is empty, and thus does not have a
-	// selected item. In that case idCurrentItem is negative to indicate
-	// this.
+	// selected item. In that case currentItem is nil.
 	// TODO: this too should be a Target (and probably name 'cursor').
-	idCurrentList int
-	idCurrentItem int
+	currentList *node
+	currentItem *node
 
 	// Indicates if data has been modified, and needs to be saved.
 	dirty bool
@@ -233,7 +221,7 @@ func (le *LolEditor) Edit(v *gocui.View, key gocui.Key, ch rune, mod gocui.Modif
 
 func (le *LolEditor) MoveMode(v *gocui.View, key gocui.Key, ch rune, mod gocui.Modifier) {
 	idx := ds.currentItemIndex()
-	max_idx := len(ds.currentList().sublist) - 1
+	max_idx := len(ds.currentList.sublist) - 1
 	new_idx := -1
 
 	switch {
@@ -262,7 +250,7 @@ func (le *LolEditor) MoveMode(v *gocui.View, key gocui.Key, ch rune, mod gocui.M
 		ds.moveItemToIndex(new_idx)
 		updateMainPane()
 		// Update the cursor as well.
-		ds.setCurrentItemIndex(new_idx)
+		ds.setCurrentItemUsingIndex(new_idx)
 	}
 }
 
@@ -307,20 +295,27 @@ func (le *LolEditor) NormalMode(v *gocui.View, key gocui.Key, ch rune, mod gocui
 	case ch == 'T':
 		cmdGoToUserTarget()
 	case ch == 'M':
-		cmdMoveToTarget(&ds.Mark)
+		cmdMoveCurrentItemToTarget(&ds.Mark)
 	case ch == 'd':
-		cmdMoveToTarget(ds.markDone)
+		// TODO: need to adjust marker so it is valid, and also want to
+		// point at TOP of list (reverse chrono).
+		cmdMoveCurrentItemToTarget(ds.markDone)
 	case ch == 'D':
-		cmdMoveToTarget(ds.markTrash)
+		// TODO: need to adjust marker so it is valid, and also want to
+		// point at TOP of list (reverse chrono).
+		cmdMoveCurrentItemToTarget(ds.markTrash)
 		/*
 			case ch == 'q':
 				quit()
 		*/
 	default:
-		fmt.Printf("\007")
+		fmt.Printf("\007") // BELL
 	}
 }
 
+// Defines callback type for dialog box; it will be called once entry in
+// dialog box completes. The possibly multi-line string from dialog box is
+// split on newlines and fed to this callback.
 type dialogCallback func([]string)
 
 type LineEditor struct {
@@ -340,7 +335,7 @@ func fullerEditor(v *gocui.View, key gocui.Key, ch rune, mod gocui.Modifier) {
 		key == gocui.KeyArrowRight:
 		v.MoveCursor(+1, 0, false)
 	// None of the following are aware that the line may be scrolled
-	// (i.e., origin has moved) TODO: fix
+	// (i.e., origin has moved)? TODO: fix
 	case key == gocui.KeyCtrlE,
 		key == gocui.KeyEnd:
 		// end of line
@@ -447,106 +442,81 @@ func (ds *dataStore) init() {
 	ds.dirty = false
 
 	// This runs only on startup; 'load' will have populated this.
-	if ds.nodes == nil {
-		root := node{
-			0, // ID
+	if ds.root == nil {
+		ds.root = &node{
 			"root",
-			-1, // invalid parent id (i.e., no parent)
-			make([]int, 0),
+			nil, // parent pointer (i.e., none)
+			make([]*node, 0),
 			false, // tagged
 		}
-		ds.nodes = make(map[int]*node, 1)
-		ds.nodes[0] = &root
-
-		ds.freeID = 1
 	}
 
-	rootkids := ds.nodes[0].sublist
+	// Set temporarily, for potential insertions.
+	ds.currentList = ds.root
+	rootkids := ds.root.sublist
 
 	// Ensure DONE exists.
 	if ds.markDone == nil {
 		// First, need cursor at end of root list.
-		ds.idCurrentList = 0 // root
 		if len(rootkids) > 0 {
-			ds.idCurrentItem = rootkids[len(rootkids)-1]
+			ds.currentItem = rootkids[len(rootkids)-1]
 		} else {
-			ds.idCurrentItem = -1
+			ds.currentItem = nil
 		}
 		n := ds.appendItem(LABEL_DONE)
-		ds.markDone = &Target{n.id, -1} // -1 id because Trash list empty
+		ds.markDone = &Target{n, -1} // -1 id because Trash list empty
 	}
 
 	// Ensure Trash exists.
 	if ds.markTrash == nil {
 		// First, need cursor at end of root list.
-		ds.idCurrentList = 0 // root
 		if len(rootkids) > 0 {
-			ds.idCurrentItem = rootkids[len(rootkids)-1]
+			ds.currentItem = rootkids[len(rootkids)-1]
 		} else {
-			ds.idCurrentItem = -1
+			ds.currentItem = nil
 		}
 		n := ds.appendItem(LABEL_TRASH)
-		ds.markTrash = &Target{n.id, -1} // -1 id because Trash list empty
+		ds.markTrash = &Target{n, -1} // -1 id because Trash list empty
 	}
 
 	// Reset cursor.
-	ds.idCurrentList = 0 // root; TODO: find this by name, in case load() led to diff idx
+	ds.currentList = ds.root
 	if len(rootkids) > 0 {
-		ds.idCurrentItem = 0
+		ds.currentItem = rootkids[0]
 	} else {
 		// invalid == no current item
-		ds.idCurrentItem = -1
+		ds.currentItem = nil
 	}
-}
-
-func (ds *dataStore) idForNode(n *node) int {
-	for k, v := range ds.nodes {
-		if v == n {
-			return k
-		}
-	}
-	// Not found.
-	return -1
-}
-
-func (ds *dataStore) currentList() *node {
-	n, ok := ds.nodes[ds.idCurrentList]
-	if !ok {
-		return nil
-	}
-	return n
-}
-
-func (ds *dataStore) currentItem() *node {
-	n, ok := ds.nodes[ds.idCurrentItem]
-	if !ok {
-		return nil
-	}
-	return n
 }
 
 // Sets current item and updates the UI selection bar to it.
-func (ds *dataStore) setCurrentItemIndex(idx int) {
-	items := ds.currentItems()
-	if idx < 0 || len(*items) == 0 {
+func (ds *dataStore) setCurrentItemUsingIndex(idx int) {
+	if ds.currentList == nil {
+		// We do not Log() as this is usually not an action explicitly
+		// triggered by the user, but rather a support function. They may
+		// call it automatically even when not suitable (e.g., init time).
+		return
+	}
+	items := ds.currentList.sublist
+	if idx < 0 || len(items) == 0 {
 		// no selected item
-		ds.idCurrentItem = -1
+		ds.currentItem = nil
 		if vd.paneMain != nil {
 			vd.paneMain.Highlight = false
 		}
 		return
 	}
-	if idx > len(*items)-1 {
+	if idx > len(items)-1 {
 		panic(fmt.Sprintf(
-			"Bad index for setCurrentItemIndex(): %v (len = %v)\n",
-			idx, len(*items)))
+			"Bad index for setCurrentItemUsingIndex(): %v (len = %v)\n",
+			idx, len(items)))
 		if vd.paneMain != nil {
 			vd.paneMain.Highlight = false
 		}
 		return
 	}
 
-	ds.idCurrentItem = (*ds.currentItems())[idx]
+	ds.currentItem = items[idx]
 	if vd.paneMain != nil {
 		// +2 offset due to list title and underline.
 		vd.paneMain.SetCursor(0, idx+2)
@@ -554,22 +524,18 @@ func (ds *dataStore) setCurrentItemIndex(idx int) {
 	}
 }
 
-func (ds *dataStore) currentItems() *[]int {
-	return &ds.currentList().sublist
-}
-
-func (ds *dataStore) indexOfItem(id int) int {
-	l := ds.currentList()
+func (ds *dataStore) indexOfItem(n *node) int {
+	l := ds.currentList
 	if l == nil {
-		Log("indexOfItem(%v) called but no current list.", id)
+		Log("indexOfItem(%v) called but no current list.", n)
 		return -1
 	}
 	if l.sublist == nil {
-		Log("indexOfItem(%v) called but current list has no sublist.", id)
+		Log("indexOfItem(%v) called but current list has no sublist.", n)
 		return -1
 	}
-	for i, k := range ds.currentList().sublist {
-		if k == id {
+	for i, k := range ds.currentList.sublist {
+		if k == n {
 			return i
 		}
 	}
@@ -578,13 +544,13 @@ func (ds *dataStore) indexOfItem(id int) int {
 }
 
 func (ds *dataStore) currentItemIndex() int {
-	if ds.idCurrentItem < 0 {
+	if ds.currentItem == nil {
 		// Error.
 		return -1
 	}
 
-	for i, k := range ds.currentList().sublist {
-		if k == ds.idCurrentItem {
+	for i, k := range ds.currentList.sublist {
+		if k == ds.currentItem {
 			return i
 		}
 	}
@@ -592,36 +558,28 @@ func (ds *dataStore) currentItemIndex() int {
 	panic("Current item not on current list.")
 }
 
-func insertKid(newkid int, kids *[]int, pos int) {
+func insertKid(newkid *node, kids *[]*node, pos int) {
 	// Sigh, Go has gross item insertion.
 
-	*kids = append(*kids, -1) // extend length by 1
+	*kids = append(*kids, nil) // extend length by 1
 	copy((*kids)[pos+1:], (*kids)[pos:])
 	(*kids)[pos] = newkid
 }
 
 // Returns the created node.
 func (ds *dataStore) appendItem(s string) *node {
-	// sanity check
-	if _, ok := ds.nodes[ds.freeID]; ok {
-		panic("freeID is not free")
-	}
-
 	n := node{
-		ds.freeID,        // ID
 		s,                // payload
-		ds.idCurrentList, // parent
-		make([]int, 0),   // sublist
+		ds.currentList,   // parent
+		make([]*node, 0), // sublist
 		false,            // tagged
 	}
-	ds.nodes[ds.freeID] = &n
-	ds.freeID += 1
-	kids := ds.currentItems()
+	kids := &ds.currentList.sublist
 	i := ds.currentItemIndex()
-	insertKid(n.id, kids, i+1)
+	insertKid(&n, kids, i+1)
 
 	// Make the latest node the current one.
-	ds.setCurrentItemIndex(i + 1)
+	ds.setCurrentItemUsingIndex(i + 1)
 
 	ds.dirty = true
 
@@ -630,105 +588,104 @@ func (ds *dataStore) appendItem(s string) *node {
 
 // Replace the current item's label with the provided string.
 func (ds *dataStore) replaceItem(s string) {
-	if ds.idCurrentItem < 0 {
+	if ds.currentItem == nil {
 		// No current item.
 		return
 	}
-
-	n, ok := ds.nodes[ds.idCurrentItem]
-
-	if !ok {
-		return
-	}
-
-	n.label = s
-
+	ds.currentItem.label = s
 	ds.dirty = true
 }
 
 func (ds *dataStore) toggleItem() {
-	if ds.idCurrentItem < 0 {
+	if ds.currentItem == nil {
 		// no items
 		return
 	}
 
-	ds.currentItem().tagged = !ds.currentItem().tagged
+	ds.currentItem.tagged = !ds.currentItem.tagged
 }
 
 func (ds *dataStore) toggleAllItems() {
-	if ds.idCurrentItem < 0 {
+	if ds.currentItem == nil {
 		// no items
 		return
 	}
 
-	newval := !ds.currentItem().tagged
-	for _, id := range *ds.currentItems() {
-		ds.nodes[id].tagged = newval
+	newval := !ds.currentItem.tagged
+	for _, n := range ds.currentList.sublist {
+		n.tagged = newval
 	}
 
 }
 
 func (ds *dataStore) SetUserTarget() {
-	ds.Mark.list = ds.idCurrentList
+	ds.Mark.list = ds.currentList
 	ds.Mark.index = ds.currentItemIndex()
 	Log("Target set.")
 }
 
 func (ds *dataStore) GoToUserTarget() {
-	// TODO: how does this behave when both Target vars are zero? (i.e.,
-	// at startup) ID==0 happens to amount to the root list (good), but
-	// current item is the root list as well... should trigger "item not
-	// in list" warning.
-	ds.idCurrentList = ds.Mark.list
+	if ds.Mark.list == nil {
+		Log("Target not set.")
+		return
+	}
+	ds.currentList = ds.Mark.list
 	// Check if Target is on a list with no items.
 	if ds.Mark.index == -1 {
-		ds.idCurrentItem = -1
+		ds.currentItem = nil
 	} else {
-		ds.idCurrentItem = (*ds.currentItems())[ds.Mark.index]
+		ds.currentItem = ds.currentList.sublist[ds.Mark.index]
 	}
-	ds.setCurrentItemIndex(ds.Mark.index)
+	ds.setCurrentItemUsingIndex(ds.Mark.index)
 	Log("Jumped to Target.")
 }
 
 // Move cursor to given target 't'.
 // Also, if move did occur, advances the target to point at moved item.
-func (ds *dataStore) MoveToTarget(t *Target) {
+func (ds *dataStore) MoveCurrentItemToTarget(t *Target) {
 	// Check that there is anything to do.
-	if ds.idCurrentItem < 0 || ds.idCurrentList < 0 {
+	if ds.currentList == nil || ds.currentItem == nil {
 		Log("No current list or item.")
 		return
 	}
 
 	// First, remove item from current list.
-	kids := &ds.currentList().sublist
+	// TODO: is there a shared function we could use? Share some code with
+	// insertKid()?
+	kids := &ds.currentList.sublist
 	i := ds.currentItemIndex()
 	*kids = append((*kids)[:i], (*kids)[i+1:]...)
 
 	// Find successor, if any.
-	var idNewCurrentItem int
+	var newCurrentItem *node
 	if i >= len(*kids) {
 		i = len(*kids) - 1
 	}
 	if i < 0 {
 		// No more items left on list.
-		idNewCurrentItem = -1
+		newCurrentItem = nil
 	} else {
-		idNewCurrentItem = (*kids)[i]
+		newCurrentItem = (*kids)[i]
 	}
 
 	// Now place it at Target
-	kids = &ds.nodes[t.list].sublist
+	kids = &t.list.sublist
 	if len(*kids) == 0 {
-		*kids = []int{ds.idCurrentItem}
+		*kids = []*node{ds.currentItem}
 	} else {
-		*kids = append(*kids, -1) // extend length by 1
-		i = t.index + 1           // insertion desired AFTER Mark
+		*kids = append(*kids, nil) // extend length by 1
+		i = t.index + 1            // insertion desired AFTER Mark
 		// There is a second part to shift only if item to insert is
 		// not meant as last item.
 		if i < len(*kids)-1 {
 			copy((*kids)[i+1:], (*kids)[i:])
 		}
-		(*kids)[i] = ds.idCurrentItem
+		if i > len(*kids)-1 {
+			Log("Target pointing beyond list (idx=%v vs maxidx=%v).",
+				i, len(*kids)-1)
+			i = len(*kids) - 1
+		}
+		(*kids)[i] = ds.currentItem
 	}
 
 	// Next, advance Mark location offset to point to the currently added
@@ -737,22 +694,24 @@ func (ds *dataStore) MoveToTarget(t *Target) {
 	t.index += 1
 
 	// Finally make sure current item is its former successor.
-	ds.idCurrentItem = idNewCurrentItem
+	ds.currentItem = newCurrentItem
 }
 
 func (ds *dataStore) unfoldItems() {
-	if ds.idCurrentItem < 0 || len(ds.currentItem().sublist) < 1 {
+	if ds.currentItem == nil || len(ds.currentItem.sublist) < 1 {
 		Log("Cannot unfold, item invalid or has no sublist.")
 		return
 	}
 
-	kids := ds.currentItems()
-	subkids := ds.currentItem().sublist
+	kids := &ds.currentList.sublist
+	subkids := ds.currentItem.sublist
 
 	// Remove fold node from kids.
+	// TODO use shared fn for this, akin to insertKid().
 	i := ds.currentItemIndex()
 	*kids = append((*kids)[:i], (*kids)[i+1:]...)
-	delete(ds.nodes, ds.idCurrentItem)
+	// And we let ds.currentItem node just get garbage collected after
+	// this.
 
 	// Add in the subkids at same index.
 	// Iterate in reverse so that end ordering stays unchanged.
@@ -761,20 +720,22 @@ func (ds *dataStore) unfoldItems() {
 	}
 
 	// Update current item.
-	ds.setCurrentItemIndex(i)
+	ds.setCurrentItemUsingIndex(i)
 
 	ds.dirty = true
 }
 
 func (ds *dataStore) foldTaggedItemsUnder(name string) {
-	kids := ds.currentItems()
-	listTagged := []int{}
-	listUntagged := []int{}
+	kids := &ds.currentList.sublist
+	listTagged := []*node{}
+	listUntagged := []*node{}
+	// Find the tagged item that is highest on list; it will determine
+	// fold node placement.
 	idxFirstTagged := -1 // not set
 	for i, k := range *kids {
-		if ds.nodes[k].tagged {
+		if k.tagged {
 			// TODO: do we really want to clear the tag bit?
-			ds.nodes[k].tagged = false
+			k.tagged = false
 			if len(listTagged) == 0 {
 				idxFirstTagged = i
 			}
@@ -788,71 +749,76 @@ func (ds *dataStore) foldTaggedItemsUnder(name string) {
 	*kids = listUntagged
 
 	// Create new node for fold.
-	n := node{
-		ds.freeID,        // ID
-		name,             // payload
-		ds.idCurrentList, // parent
-		listTagged,       // sublist
-		false,            // tagged
+	nFold := node{
+		name,           // payload
+		ds.currentList, // parent
+		listTagged,     // sublist
+		false,          // tagged
 	}
-	ds.nodes[ds.freeID] = &n
-	ds.freeID += 1
 
 	// Insert the new node into current list.
 	i := idxFirstTagged
 	if i > len(*kids) {
 		i = len(*kids)
 	}
-	insertKid(n.id, kids, i)
+	insertKid(&nFold, kids, i)
 
 	// Adjust current item.
-	ds.idCurrentItem = n.id
+	ds.currentItem = &nFold
 
 	ds.dirty = true
 }
 
+// Workhorse for the 'm'ove command, which moves item up/down within current
+// list (vs 'Move' command which moves to Target).
 func (ds *dataStore) moveItemToIndex(idxNew int) {
 	idx := ds.currentItemIndex()
 	if idx == idxNew {
 		return
 	}
 
-	newSublist := make([]int, 0)
-	for _, k := range ds.currentList().sublist {
-		if k == ds.idCurrentItem {
+	sublistNew := make([]*node, 0)
+	for _, kid := range ds.currentList.sublist {
+		if kid == ds.currentItem {
+			// The currentItem is the one being moved, it will be put
+			// on either list by other code below.
 			continue
 		}
-		if len(newSublist) == idxNew {
-			newSublist = append(newSublist, ds.idCurrentItem)
+		// New sublist is long-enough that we can place currentItem at
+		// right spot.
+		if len(sublistNew) == idxNew {
+			sublistNew = append(sublistNew, ds.currentItem)
 		}
-		newSublist = append(newSublist, k)
+		sublistNew = append(sublistNew, kid)
 	}
-	// Could be being placed as last item.
-	if len(newSublist) == idxNew {
-		newSublist = append(newSublist, ds.idCurrentItem)
+	// If being placed as last item.
+	if len(sublistNew) == idxNew {
+		sublistNew = append(sublistNew, ds.currentItem)
 	}
-	ds.currentList().sublist = newSublist
+	ds.currentList.sublist = sublistNew
 	ds.dirty = true
 }
 
+// Advance currentItem.
 func (ds *dataStore) nextItem() {
-	list := ds.currentList().sublist
-	for i, id := range list {
-		if id == ds.idCurrentItem {
+	list := ds.currentList.sublist
+	for i, kid := range list {
+		if kid == ds.currentItem {
 			if i < len(list)-1 {
-				ds.setCurrentItemIndex(i + 1)
+				ds.setCurrentItemUsingIndex(i + 1)
 			}
 			return
 		}
 	}
 }
 
+// Back up currentItem.
 func (ds *dataStore) prevItem() {
-	list := ds.currentList().sublist
-	for i, id := range list {
-		if id == ds.idCurrentItem {
+	list := ds.currentList.sublist
+	for i, kid := range list {
+		if kid == ds.currentItem {
 			if i > 0 {
-				ds.setCurrentItemIndex(i - 1)
+				ds.setCurrentItemUsingIndex(i - 1)
 			}
 			return
 		}
@@ -860,40 +826,53 @@ func (ds *dataStore) prevItem() {
 }
 
 func (ds *dataStore) firstItem() {
-	ds.setCurrentItemIndex(0)
+	ds.setCurrentItemUsingIndex(0)
 }
 
 func (ds *dataStore) lastItem() {
-	l := ds.currentItems()
-	ds.setCurrentItemIndex(len(*l) - 1)
+	l := &ds.currentList.sublist
+	ds.setCurrentItemUsingIndex(len(*l) - 1)
 }
 
 func (ds *dataStore) focusDescend() {
-	if ds.idCurrentItem >= 0 {
-		ds.idCurrentList = ds.idCurrentItem
-		if len(ds.currentList().sublist) > 0 {
-			ds.setCurrentItemIndex(0)
+	if ds.currentItem != nil {
+		ds.currentList = ds.currentItem
+		if len(ds.currentList.sublist) > 0 {
+			ds.setCurrentItemUsingIndex(0)
 		} else {
 			// < 0 means no item selected
-			ds.setCurrentItemIndex(-1)
+			ds.setCurrentItemUsingIndex(-1)
 		}
 		// TODO: push this off to cmd*()
 		//vd.paneMain.Title = ds.currentList().label
 	}
-	// Else do nothing; < 0 implies ds.idCurrentList does not have items.
+	// Else do nothing; < 0 implies ds.currentList does not have items.
 }
 
 func (ds *dataStore) focusAscend() {
-	if ds.currentList().parent < 0 {
+	if ds.currentList.parent == nil {
 		// Nothing to do if already at a root.
 		return
 	}
-	newCurrentItem := ds.idCurrentList
-	ds.idCurrentList = ds.currentList().parent
-	ds.setCurrentItemIndex(ds.indexOfItem(newCurrentItem))
+	newCurrentItem := ds.currentList
+	ds.currentList = ds.currentList.parent
+	ds.setCurrentItemUsingIndex(ds.indexOfItem(newCurrentItem))
 
 	// TODO: push this off to cmd*()
 	//vd.paneMain.Title = ds.currentList().label
+}
+
+func mapToId(n *node, m *map[*node]int, freeId *int) {
+	if _, ok := (*m)[n]; ok {
+		// Node already in map.
+		return
+	}
+	// Grab fresh ID before visiting kids.
+	(*m)[n] = *freeId
+	*freeId += 1
+	for _, kid := range n.sublist {
+		mapToId(kid, m, freeId)
+	}
 }
 
 func (ds *dataStore) save() {
@@ -911,34 +890,38 @@ func (ds *dataStore) save() {
 		return
 	}
 
+	// Pre-work: map each node to a unique ID.
+	nodeMap := make(map[*node]int)
+	freeId := 1
+	mapToId(ds.root, &nodeMap, &freeId)
+
 	// First, write out special node ids.
 	if ds.markDone != nil {
-		idDone := ds.nodes[ds.markDone.list].id
+		idDone := nodeMap[ds.markDone.list]
 		f.WriteString(fmt.Sprintf("DONE %v\n", idDone))
 	}
 	if ds.markTrash != nil {
-		idTrash := ds.nodes[ds.markTrash.list].id
+		idTrash := nodeMap[ds.markTrash.list]
 		f.WriteString(fmt.Sprintf("TRASH %v\n", idTrash))
 	}
 
-	// Finally, dump out the whole node database.
-	keys := make([]int, 0)
-	for _, n := range ds.nodes {
-		keys = append(keys, n.id)
-	}
-	sort.Ints(keys)
-	for _, k := range keys {
-		n := ds.nodes[k]
-		f.WriteString(fmt.Sprintf("node %v\n", k))
+	// Finally, write out nodes in breadth first order.
+	nToDo := []*node{ds.root}
+	var n *node
+	for len(nToDo) > 0 {
+		n, nToDo = nToDo[0], nToDo[1:]
+		f.WriteString(fmt.Sprintf("node %v\n", nodeMap[n]))
 		f.WriteString(fmt.Sprintf("%s\n", n.label))
 		// TODO: get rid of trailing space after last item; use some
 		// join()
 		for _, child := range n.sublist {
-			f.WriteString(fmt.Sprintf("%v ", child))
+			f.WriteString(fmt.Sprintf("%v ", nodeMap[child]))
 		}
 		// NOTE: if no children, will result in blank line.
 		// (intentional)
 		f.WriteString("\n")
+
+		nToDo = append(nToDo, n.sublist...)
 	}
 
 	ds.dirty = false
@@ -947,8 +930,14 @@ func (ds *dataStore) save() {
 
 func (ds *dataStore) load() {
 	// First wipe any data we have.
-	ds.nodes = make(map[int]*node, 0)
-	ds.freeID = 1
+	ds.root = nil
+
+	// We will need to build up a map, to better link things.
+	type nodeData struct {
+		n    *node
+		kids []int
+	}
+	nodeMap := make(map[int]nodeData)
 
 	data, err := ioutil.ReadFile(*filename)
 	if err != nil {
@@ -963,6 +952,7 @@ func (ds *dataStore) load() {
 
 	var l string
 	for {
+		// If ran out of input, we are done.
 		if len(lines) < 1 {
 			break
 		}
@@ -994,6 +984,7 @@ func (ds *dataStore) load() {
 			continue
 		}
 
+		// If not any above, then it should be a node definition.
 		if !strings.HasPrefix(l, "node ") {
 			fmt.Printf("Format error: expected node #, got %q.\n", l)
 			return
@@ -1006,16 +997,12 @@ func (ds *dataStore) load() {
 			panic(err)
 		}
 
-		if ds.freeID <= id {
-			ds.freeID = id + 1
-		}
-
 		label := pop(&lines)
 
 		l = strings.Trim(pop(&lines), whitespace)
 		var idKids []int
 		if len(l) > 0 {
-			// have some kids
+			// SOME kids
 			kids := strings.Split(l, " ")
 			idKids = make([]int, len(kids))
 			for i, s := range kids {
@@ -1031,38 +1018,42 @@ func (ds *dataStore) load() {
 
 		// Create the node.
 		n := node{
-			id,
 			label,
-			0, // parent; TBD
-			idKids,
+			nil,   // parent; TBD
+			nil,   // kids; TBD
 			false, // tagged
 		}
-		ds.nodes[id] = &n
-	}
-
-	// Readjust parent pointers.
-	for _, n := range ds.nodes {
-		for _, k := range n.sublist {
-			ds.nodes[k].parent = n.id
+		nodeMap[id] = nodeData{
+			&n,
+			idKids,
+		}
+		if label == "root" && (id == 0 || id == 1) {
+			ds.root = &n
 		}
 	}
-	// Also adjust root's parent.
-	ds.nodes[0].parent = -1
+
+	// Readjust parent & kid pointers.
+	for _, ndata := range nodeMap {
+		for _, idKid := range ndata.kids {
+			ndata.n.sublist = append(ndata.n.sublist, nodeMap[idKid].n)
+			nodeMap[idKid].n.parent = ndata.n
+		}
+	}
 
 	// Handle special Targets.
 	if idDone > 0 {
-		n := ds.nodes[idDone]
-		ds.markDone = &Target{n.id, len(n.sublist) - 1}
+		n := nodeMap[idDone].n
+		ds.markDone = &Target{n, len(n.sublist) - 1}
 	}
 	if idTrash > 0 {
-		n := ds.nodes[idTrash]
-		ds.markTrash = &Target{n.id, len(n.sublist) - 1}
+		n := nodeMap[idTrash].n
+		ds.markTrash = &Target{n, len(n.sublist) - 1}
 	}
 
-	ds.idCurrentList = 0
-	ds.setCurrentItemIndex(-1)
-	if len(ds.nodes[ds.idCurrentList].sublist) > 0 {
-		ds.setCurrentItemIndex(0)
+	ds.currentList = ds.root
+	ds.currentItem = nil
+	if len(ds.root.sublist) > 0 {
+		ds.setCurrentItemUsingIndex(0)
 	}
 
 	ds.dirty = false
@@ -1152,8 +1143,8 @@ func layout(g *gocui.Gui) error {
 		vd.paneMain = v
 		updateMainPane()
 		g.SetCurrentView("main")
-		if len(*ds.currentItems()) > 0 {
-			ds.setCurrentItemIndex(0)
+		if len(ds.currentList.sublist) > 0 {
+			ds.setCurrentItemUsingIndex(0)
 		}
 	}
 	if v, err := g.SetView("message", dimsMsg[0], dimsMsg[1], dimsMsg[2], dimsMsg[3]); err != nil {
@@ -1176,7 +1167,7 @@ func layout(g *gocui.Gui) error {
 func updateMainPane() {
 	vd.paneMain.Clear()
 
-	n := ds.currentList()
+	n := ds.currentList
 
 	if n == nil {
 		panic("currentList not found!")
@@ -1188,10 +1179,9 @@ func updateMainPane() {
 	// NOTE: len() needs to count runes, not bytes (because of Unicode
 	// multibyte runes).
 	fmt.Fprintln(vd.paneMain, strings.Repeat("─", len([]rune(title))))
-	for _, item := range n.sublist {
-		ni := ds.nodes[item]
+	for _, kid := range n.sublist {
 		pfx := pfxItem
-		if item == ds.idCurrentItem {
+		if kid == ds.currentItem {
 			if vd.editorLol.modeMove {
 				pfx = pfxFocusedMovingItem
 			} else {
@@ -1199,11 +1189,11 @@ func updateMainPane() {
 			}
 		}
 		sfx := ""
-		if len(ds.nodes[item].sublist) > 0 {
+		if len(kid.sublist) > 0 {
 			sfx = sfxMore
 		}
-		line := pfx + ds.nodes[item].label + sfx
-		if ni.tagged {
+		line := pfx + kid.label + sfx
+		if kid.tagged {
 			line = colorString(line, BG_BLACK, FG_CYAN, "")
 		}
 		fmt.Fprintln(vd.paneMain, line)
@@ -1248,7 +1238,7 @@ func cmdAddItems() {
 }
 
 func cmdReplaceItem() {
-	dlgEditor := dialog(vd.gui, "Replace", ds.nodes[ds.idCurrentItem].label)
+	dlgEditor := dialog(vd.gui, "Replace", ds.currentItem.label)
 	dlgEditor.multiline = false
 	dlgEditor.onFinish = func(ss []string) {
 		ds.replaceItem(ss[0])
@@ -1324,8 +1314,8 @@ func cmdSetUserTarget() {
 	// No need to update pane.
 }
 
-func cmdMoveToTarget(t *Target) {
-	ds.MoveToTarget(t)
+func cmdMoveCurrentItemToTarget(t *Target) {
+	ds.MoveCurrentItemToTarget(t)
 	updateMainPane()
 }
 
