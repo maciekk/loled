@@ -1,11 +1,11 @@
 // List of Lists (LOL) EDitor
 //
 // TODO
-// - need command to expunge Trash
 // - Done & Trash should move such that most recent is topmost in their lists
 // - add Status window, on top of log window: logo + stats about datastore
 // - bug: segfaults on empty *.lol file
 // - bug: on fold, when items at start of list, visible cursor not adjusted.
+// - need a reliable way to auto-set 'dirty'; I often forget in new code.
 // - rather than printing "root", the root node should be labeled with
 //   filename being edited.
 // - clean up finally the singletons (vd & ds), and distribute methods better!
@@ -16,6 +16,7 @@
 //   - better method for printing color strings, w/o ANSII escapes
 // - fix gocui off-by-one bug w/256 color setting in SelFgCol and SelBgCol
 //   (possibly bug in termbox-go underneath gocui)
+// - have "Pull from Target" command, reverse of 'M'ove
 // - provide high level overview of major classes and their relationships in
 //   top-of-file comment here (above TODO section)
 // - delete should delete all tagged items in current list if any are tagged,
@@ -304,6 +305,8 @@ func (le *LolEditor) NormalMode(v *gocui.View, key gocui.Key, ch rune, mod gocui
 		// TODO: need to adjust marker so it is valid, and also want to
 		// point at TOP of list (reverse chrono).
 		cmdMoveCurrentItemToTarget(ds.markTrash)
+	case ch == 'X':
+		cmdExpungeTrash()
 		/*
 			case ch == 'q':
 				quit()
@@ -638,6 +641,11 @@ func (ds *dataStore) GoToUserTarget() {
 	}
 	ds.setCurrentItemUsingIndex(ds.Mark.index)
 	Log("Jumped to Target.")
+}
+
+func (ds *dataStore) ExpungeTrash() {
+	ds.markTrash.list.sublist = ds.markTrash.list.sublist[0:0]
+	ds.dirty = true
 }
 
 // Move cursor to given target 't'.
@@ -1321,6 +1329,14 @@ func cmdMoveCurrentItemToTarget(t *Target) {
 
 func cmdGoToUserTarget() {
 	ds.GoToUserTarget()
+	updateMainPane()
+}
+
+func cmdExpungeTrash() {
+	ds.ExpungeTrash()
+	// Strictly only necessary if:
+	// - Trash is currently displayed
+	// - root is being displayed ("has items" indicator should disappear)
 	updateMainPane()
 }
 
