@@ -128,3 +128,5 @@ func cmdExpungeTrash() {
 	// - root is being displayed ("has items" indicator should disappear)
 	updateMainPane()
 }
+
+// vim: fdm=syntax

@@ -681,3 +681,5 @@ func (ds *dataStore) load() {
 	ds.dirty = false
 	Log("Loaded %q.", *filename)
 }
+
+// vim: fdm=syntax

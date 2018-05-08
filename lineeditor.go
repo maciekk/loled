@@ -108,3 +108,5 @@ func (le *LineEditor) Edit(v *gocui.View, key gocui.Key, ch rune, mod gocui.Modi
 		fullerEditor(v, key, ch, mod)
 	}
 }
+
+// vim: fdm=syntax

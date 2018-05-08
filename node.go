@@ -28,3 +28,5 @@ func (n *node) removeKid(pos int) *node {
 	n.sublist = append(n.sublist[:pos], n.sublist[pos+1:]...)
 	return r
 }
+
+// vim: fdm=syntax

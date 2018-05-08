@@ -33,3 +33,5 @@ func pop(l *[]string) string {
 func pushBack(l *[]string, s string) {
 	*l = append(*l, s)
 }
+
+// vim: fdm=syntax

@@ -112,3 +112,5 @@ func (le *LolEditor) NormalMode(v *gocui.View, key gocui.Key, ch rune, mod gocui
 		fmt.Printf("\007") // BELL
 	}
 }
+
+// vim: fdm=syntax

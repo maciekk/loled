@@ -289,3 +289,5 @@ func main() {
 		}
 	}
 }
+
+// vim: fdm=syntax

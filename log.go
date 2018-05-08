@@ -15,3 +15,5 @@ func Log(s string, a ...interface{}) {
 	}
 	fmt.Fprintf(f, s+"\n", a...)
 }
+
+// vim: fdm=syntax

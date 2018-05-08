@@ -53,3 +53,5 @@ const (
 func colorString(s string, fg, bg int, extra string) string {
 	return fmt.Sprintf("\033[%d;%d%vm%v\033[0m", bg, fg, extra, s)
 }
+
+// vim: fdm=syntax
