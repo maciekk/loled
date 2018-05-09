@@ -8,8 +8,7 @@ import (
 // COMMANDS
 
 func cmdAddItems() {
-	dlgEditor := dialog(vd.gui, "Add", "")
-	dlgEditor.multiline = true
+	dlgEditor := dialog(vd.gui, "Add", "", true)
 	dlgEditor.onFinish = func(ss []string) {
 		for _, s := range ss {
 			text := strings.TrimRight(s, whitespace)
@@ -25,8 +24,7 @@ func cmdReplaceItem() {
 	if ds.currentItem == nil {
 		return
 	}
-	dlgEditor := dialog(vd.gui, "Replace", ds.currentItem.label)
-	dlgEditor.multiline = false
+	dlgEditor := dialog(vd.gui, "Replace", ds.currentItem.label, false)
 	dlgEditor.onFinish = func(ss []string) {
 		ds.replaceItem(ss[0])
 		updateMainPane()
@@ -45,8 +43,7 @@ func cmdToggleAllItems() {
 }
 
 func cmdFoldItems() {
-	dlgEditor := dialog(vd.gui, "Fold", "")
-	dlgEditor.multiline = false
+	dlgEditor := dialog(vd.gui, "Fold", "", false)
 	dlgEditor.onFinish = func(ss []string) {
 		ds.foldTaggedItemsUnder(ss[0])
 		updateMainPane()

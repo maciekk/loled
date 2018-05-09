@@ -71,17 +71,23 @@ var vd viewData
 ////////////////////////////////////////
 // User Interface functions
 
-func dialog(g *gocui.Gui, title, prefill string) *LineEditor {
+func dialog(g *gocui.Gui, title, prefill string, multiline bool) *LineEditor {
 	const w = 40
-	const h = 3
+	var h int
+	if multiline {
+		h = 3
+	} else {
+		h = 2
+	}
 	maxX, maxY := g.Size()
-	if v, err := g.SetView("dialog", maxX/2-w/2, maxY/2-h/2, maxX/2+w/2, maxY/2+h/2); err != nil {
+	if v, err := g.SetView("dialog", maxX/2-w/2, maxY/2-h/2, maxX/2+w/2, maxY/2-h/2+h); err != nil {
 		if err != gocui.ErrUnknownView {
 			return nil
 		}
 		v.Frame = true
 		v.Editable = true
 		le := LineEditor{}
+		le.multiline = multiline
 		v.Editor = &le
 		v.Title = title
 		fmt.Fprintf(v, prefill)
