@@ -20,7 +20,11 @@ type LineEditor struct {
 // A beefed up version of 'simpleEditor' that resembles Emacs-like bindings
 // that are on by default with GNU readline, shells, etc.
 func fullerEditor(v *gocui.View, key gocui.Key, ch rune, mod gocui.Modifier) {
-	x, y := v.Cursor()
+	// Obtain the *absolute* coordinates, not relative to Origin.
+	cx, cy := v.Cursor()
+	ox, oy := v.Origin()
+	x, y := cx+ox, cy+oy
+
 	switch {
 	case key == gocui.KeyCtrlB,
 		key == gocui.KeyArrowLeft:
@@ -71,6 +75,19 @@ func fullerEditor(v *gocui.View, key gocui.Key, ch rune, mod gocui.Modifier) {
 	default:
 		// If we didn't handle key above, pass through to base editor.
 		gocui.DefaultEditor.Edit(v, key, ch, mod)
+	}
+
+	// Adjust horizontal offset so that cursor is away from entry edge.
+	cx, cy = v.Cursor()
+	ox, oy = v.Origin()
+	width, _ := v.Size()
+	if cx < 5 && ox > 0 {
+		dx := min(ox, 5)
+		v.SetOrigin(ox-dx, oy)
+		v.SetCursor(cx+dx, cy)
+	} else if cx > width-5 {
+		v.SetOrigin(ox+5, oy)
+		v.SetCursor(cx-5, cy)
 	}
 }
 
