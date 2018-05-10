@@ -18,6 +18,7 @@ func (n *node) insertKid(pos int, newkid *node) {
 	n.sublist = append(n.sublist, nil) // extend length by 1
 	copy(n.sublist[pos+1:], n.sublist[pos:])
 	n.sublist[pos] = newkid
+	newkid.parent = n
 }
 
 func (n *node) removeKid(pos int) *node {
@@ -26,6 +27,7 @@ func (n *node) removeKid(pos int) *node {
 	}
 	r := n.sublist[pos]
 	n.sublist = append(n.sublist[:pos], n.sublist[pos+1:]...)
+	r.parent = nil
 	return r
 }
 
