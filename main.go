@@ -53,6 +53,9 @@ type viewData struct {
 	// current list display
 	paneMain *gocui.View
 
+	// information pane
+	paneInfo *gocui.View
+
 	// echo area for messages
 	paneMessage *gocui.View
 
@@ -105,23 +108,29 @@ func dialog(g *gocui.Gui, title, prefill string, multiline bool) *LineEditor {
 
 func layout(g *gocui.Gui) error {
 	maxX, maxY := g.Size()
-	var dimsMain, dimsMsg [4]int
+	var dimsMain, dimsInfo, dimsMsg [4]int
 	if maxX < 80 {
 		// Vertical layout
-		mainPaneHeight := maxY - 10 - 1
+		infoPaneHeight := 5
+		mainPaneHeight := maxY - infoPaneHeight - 10 - 1
 		dimsMain = [4]int{
 			0,
 			0,
 			maxX - 1,
 			mainPaneHeight,
 		}
-		dimsMsg = [4]int{
+		dimsInfo = [4]int{
 			0,
 			mainPaneHeight + 1,
 			maxX - 1,
+			mainPaneHeight + infoPaneHeight,
+		}
+		dimsMsg = [4]int{
+			0,
+			mainPaneHeight + infoPaneHeight + 1,
+			maxX - 1,
 			maxY - 1,
 		}
-
 	} else {
 		// Horizontal layout
 		mainPaneWidth := min(PANE_MAIN_MAX_WIDTH, maxX-40)
@@ -131,12 +140,21 @@ func layout(g *gocui.Gui) error {
 			mainPaneWidth,
 			maxY - 1,
 		}
-		dimsMsg = [4]int{
-			mainPaneWidth + 1 + 3,
+		secondColumnStart := mainPaneWidth + 1
+		infoPaneHeight := 5 + 2
+		dimsInfo = [4]int{
+			secondColumnStart,
 			0,
 			maxX - 1,
-			maxY / 2,
+			infoPaneHeight,
 		}
+		dimsMsg = [4]int{
+			secondColumnStart + 3,
+			infoPaneHeight + 2,
+			maxX - 1,
+			maxY - 1,
+		}
+
 	}
 	if v, err := g.SetView("main", dimsMain[0], dimsMain[1], dimsMain[2], dimsMain[3]); err != nil {
 		if err != gocui.ErrUnknownView {
@@ -161,12 +179,23 @@ func layout(g *gocui.Gui) error {
 			ds.setCurrentItemUsingIndex(0)
 		}
 	}
+	if v, err := g.SetView("info", dimsInfo[0], dimsInfo[1], dimsInfo[2], dimsInfo[3]); err != nil {
+		if err != gocui.ErrUnknownView {
+			return err
+		}
+		v.Frame = true
+		v.Title = "Status"
+		v.Autoscroll = false
+		v.FgColor = 240
+		vd.paneInfo = v
+		updateStatusPane()
+	}
 	if v, err := g.SetView("message", dimsMsg[0], dimsMsg[1], dimsMsg[2], dimsMsg[3]); err != nil {
 		if err != gocui.ErrUnknownView {
 			return err
 		}
 		v.Frame = false
-		v.Title = "log"
+		v.Title = "Log"
 		v.Autoscroll = true
 		v.FgColor = 240
 		vd.paneMessage = v
@@ -211,6 +240,26 @@ func updateMainPane() {
 		}
 		fmt.Fprintln(vd.paneMain, line)
 	}
+	// For now, if you need to update main view, you likely need to update
+	// status as well.
+	// TODO: find better location, system.
+	updateStatusPane()
+}
+
+func updateStatusPane() {
+	if vd.paneInfo == nil {
+		return
+	}
+
+	vd.paneInfo.Clear()
+
+	var s string
+	if ds.dirty {
+		s = "DIRTY"
+	} else {
+		s = "NOT dirty"
+	}
+	fmt.Fprintln(vd.paneInfo, s)
 }
 
 ////////////////////////////////////////
