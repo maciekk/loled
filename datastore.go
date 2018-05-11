@@ -306,6 +306,7 @@ func (ds *dataStore) MoveCurrentItemToTarget(t *Target) {
 		}
 		(*kids)[i] = ds.currentItem
 	}
+	ds.currentItem.parent = t.list
 
 	// Maybe advance Target index, depending on type of Target. Behaviour
 	// is determined by what the end effect is of moving multiple items
