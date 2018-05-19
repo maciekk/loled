@@ -54,4 +54,8 @@ func colorString(s string, fg, bg int, extra string) string {
 	return fmt.Sprintf("\033[%d;%d%vm%v\033[0m", bg, fg, extra, s)
 }
 
+func setTitle(s string) {
+	fmt.Printf("\033]0;%s\007", s)
+}
+
 // vim: fdm=syntax
