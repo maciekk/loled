@@ -31,4 +31,17 @@ func (n *node) removeKid(pos int) *node {
 	return r
 }
 
+// Returns number of nodes in tree, and its max depth.
+func (n *node) Analyze() (int, int) {
+	// Start off by counting self.
+	count := 1
+	depth := 1
+	for _, kid := range n.sublist {
+		kid_count, kid_depth := kid.Analyze()
+		count += kid_count
+		depth = max(depth, kid_depth+1)
+	}
+	return count, depth
+}
+
 // vim: fdm=syntax

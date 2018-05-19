@@ -11,6 +11,7 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/jroimartin/gocui"
@@ -160,6 +161,8 @@ func layout(g *gocui.Gui) error {
 		if err != gocui.ErrUnknownView {
 			return err
 		}
+		v.Frame = true
+		v.Title = "Main"
 		vd.editorLol = &LolEditor{}
 		v.Editor = vd.editorLol
 		v.Editable = true
@@ -216,11 +219,17 @@ func updateMainPane() {
 		panic("currentList not found!")
 	}
 
-	title := fmt.Sprintf("▶ %v", n.label) // TODO: add more info
-	fmt.Fprintln(vd.paneMain, title)
+	view_title := filepath.Base(*filename)
+	if ds.dirty {
+		view_title = "* " + view_title
+	}
+	vd.paneMain.Title = view_title
+
+	list_title := fmt.Sprintf("▶ %v", n.label) // TODO: add more info
+	fmt.Fprintln(vd.paneMain, list_title)
 	// NOTE: len() needs to count runes, not bytes (because of Unicode
 	// multibyte runes).
-	fmt.Fprintln(vd.paneMain, strings.Repeat("─", len([]rune(title))))
+	fmt.Fprintln(vd.paneMain, strings.Repeat("─", len([]rune(list_title))))
 	for _, kid := range n.sublist {
 		pfx := pfxItem
 		if kid == ds.currentItem {
@@ -260,6 +269,12 @@ func updateStatusPane() {
 		s = "NOT dirty"
 	}
 	fmt.Fprintln(vd.paneInfo, s)
+
+	if ds.currentItem != nil {
+		count, depth := ds.currentItem.Analyze()
+		fmt.Fprintf(vd.paneInfo, "depth = %d\n", depth)
+		fmt.Fprintf(vd.paneInfo, "count = %d\n", count)
+	}
 }
 
 ////////////////////////////////////////
@@ -308,6 +323,8 @@ func main() {
 		fmt.Printf("Unable to stat %q; creating empty dataStore instead.\n", *filename)
 		ds.init()
 	}
+
+	setTitle(filepath.Base(*filename))
 
 	// Set up GUI.
 	g, err := gocui.NewGui(gocui.Output256)
