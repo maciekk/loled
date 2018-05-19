@@ -87,10 +87,12 @@ func cmdAscend() {
 
 func cmdSaveData() {
 	ds.save()
+	updateMainPane()
 }
 
 func cmdLoadData() {
 	ds.load()
+	updateMainPane()
 }
 
 func cmdSetUserTarget() {
